@@ -1,8 +1,6 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const multer = require("multer");
-const path = require("path");
 require("dotenv").config();
 
 const app = express();
@@ -10,25 +8,14 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 // ===== MIDDLEWARE =====
-app.use(cors({ origin: "https://filehub-gyll.web.app" })); // <- your Firebase Hosting URL
+app.use(cors({ origin: "https://filehub-gyll.web.app" }));
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads"))); // Serve uploaded files
 
 // ===== CONNECT TO MONGODB =====
 mongoose
   .connect(MONGO_URI)
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
-
-// ===== MULTER SETUP =====
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + "-" + file.originalname;
-    cb(null, uniqueName);
-  },
-});
-const upload = multer({ storage });
 
 // ===== SCHEMA =====
 const uploadSchema = new mongoose.Schema({
@@ -48,29 +35,22 @@ const Upload = mongoose.model("Upload", uploadSchema);
 
 // ===== ROUTES =====
 
-// POST: Upload files
-app.post("/api/uploads", upload.array("files", 10), async (req, res) => {
+// POST: Save metadata from Firebase upload
+app.post("/api/uploads", async (req, res) => {
   try {
-    const { name, code } = req.body;
+    const { name, code, files, size } = req.body;
 
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded" });
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
     }
 
-    const files = req.files.map((file) => ({
-      name: file.originalname,
-      url: `${req.protocol}://${req.get("host")}/uploads/${file.filename}`,
-    }));
-
-    const totalSize = req.files.reduce((sum, f) => sum + f.size, 0);
-
-    const newUpload = new Upload({ name, code, files, size: totalSize });
+    const newUpload = new Upload({ name, code, files, size });
     await newUpload.save();
 
-    res.status(201).json({ message: "Upload saved successfully", code });
+    res.status(201).json({ message: "Upload metadata saved", code });
   } catch (error) {
     console.error("Upload error:", error);
-    res.status(500).json({ error: "Failed to save upload" });
+    res.status(500).json({ error: "Failed to save upload metadata" });
   }
 });
 
