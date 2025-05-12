@@ -8,7 +8,24 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 // ===== MIDDLEWARE =====
-app.use(cors({ origin: "https://filehub-gyll.web.app" }));
+const allowedOrigins = [
+  "https://filehub-gyll.web.app",
+  "https://fileverse-krwk3.web.app",
+  "http://localhost:3000"
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    }
+  })
+);
+
 app.use(express.json());
 
 // ===== CONNECT TO MONGODB =====
@@ -34,8 +51,6 @@ const uploadSchema = new mongoose.Schema({
 const Upload = mongoose.model("Upload", uploadSchema);
 
 // ===== ROUTES =====
-
-// POST: Save metadata from Firebase upload
 app.post("/api/uploads", async (req, res) => {
   try {
     const { name, code, files, size } = req.body;
@@ -54,7 +69,6 @@ app.post("/api/uploads", async (req, res) => {
   }
 });
 
-// GET: Retrieve file info by code
 app.get("/api/uploads/:code", async (req, res) => {
   try {
     const data = await Upload.findOne({ code: req.params.code });
@@ -68,7 +82,6 @@ app.get("/api/uploads/:code", async (req, res) => {
   }
 });
 
-// GET: All uploads (for admin)
 app.get("/api/uploads", async (req, res) => {
   try {
     const uploads = await Upload.find().sort({ date: -1 });
