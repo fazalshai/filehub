@@ -10,16 +10,13 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 // ===== MIDDLEWARE =====
-app.use(cors({ origin: "http://localhost:3000" }));
+app.use(cors({ origin: "https://filehub-gyll.web.app" })); // <- your Firebase Hosting URL
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads"))); // serve static files
+app.use("/uploads", express.static(path.join(__dirname, "uploads"))); // Serve uploaded files
 
 // ===== CONNECT TO MONGODB =====
 mongoose
-  .connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(MONGO_URI)
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
@@ -47,19 +44,24 @@ const uploadSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
 });
 
-
 const Upload = mongoose.model("Upload", uploadSchema);
 
 // ===== ROUTES =====
 
-// POST upload
+// POST: Upload files
 app.post("/api/uploads", upload.array("files", 10), async (req, res) => {
   try {
     const { name, code } = req.body;
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded" });
+    }
+
     const files = req.files.map((file) => ({
-      originalName: file.originalname,
-      storedName: file.filename,
+      name: file.originalname,
+      url: `${req.protocol}://${req.get("host")}/uploads/${file.filename}`,
     }));
+
     const totalSize = req.files.reduce((sum, f) => sum + f.size, 0);
 
     const newUpload = new Upload({ name, code, files, size: totalSize });
@@ -72,7 +74,7 @@ app.post("/api/uploads", upload.array("files", 10), async (req, res) => {
   }
 });
 
-// GET single file by code
+// GET: Retrieve file info by code
 app.get("/api/uploads/:code", async (req, res) => {
   try {
     const data = await Upload.findOne({ code: req.params.code });
@@ -86,7 +88,7 @@ app.get("/api/uploads/:code", async (req, res) => {
   }
 });
 
-// GET all uploads (admin)
+// GET: All uploads (for admin)
 app.get("/api/uploads", async (req, res) => {
   try {
     const uploads = await Upload.find().sort({ date: -1 });
@@ -99,5 +101,5 @@ app.get("/api/uploads", async (req, res) => {
 
 // ===== START SERVER =====
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
