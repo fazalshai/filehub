@@ -11,7 +11,8 @@ const MONGO_URI = process.env.MONGO_URI;
 const allowedOrigins = [
   "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
-  "http://localhost:3000"
+  "http://localhost:3000",
+  "https://fylshare.com/"
 ];
 
 app.use(
