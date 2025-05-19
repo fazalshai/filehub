@@ -12,7 +12,7 @@ const allowedOrigins = [
   "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
   "http://localhost:3000",
-  "https://fylshare.com/"
+  "https://fylshare.com"
 ];
 
 app.use(
