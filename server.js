@@ -52,6 +52,8 @@ const uploadSchema = new mongoose.Schema({
 const Upload = mongoose.model("Upload", uploadSchema);
 
 // ===== ROUTES =====
+
+// Create new upload
 app.post("/api/uploads", async (req, res) => {
   try {
     const { name, code, files, size } = req.body;
@@ -70,6 +72,7 @@ app.post("/api/uploads", async (req, res) => {
   }
 });
 
+// Get a single upload by code
 app.get("/api/uploads/:code", async (req, res) => {
   try {
     const data = await Upload.findOne({ code: req.params.code });
@@ -83,6 +86,7 @@ app.get("/api/uploads/:code", async (req, res) => {
   }
 });
 
+// Get all uploads (admin use)
 app.get("/api/uploads", async (req, res) => {
   try {
     const uploads = await Upload.find().sort({ date: -1 });
@@ -90,6 +94,20 @@ app.get("/api/uploads", async (req, res) => {
   } catch (err) {
     console.error("Admin fetch error:", err);
     res.status(500).json({ error: "Failed to fetch uploads" });
+  }
+});
+
+// ===== NEW: DELETE upload by code (for main admin) =====
+app.delete("/api/uploads/:code", async (req, res) => {
+  try {
+    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
+    if (!deleted) {
+      return res.status(404).json({ message: "No upload found with this code" });
+    }
+    res.status(200).json({ message: "Upload deleted successfully" });
+  } catch (error) {
+    console.error("Delete error:", error);
+    res.status(500).json({ error: "Error deleting upload" });
   }
 });
 
