@@ -35,7 +35,9 @@ mongoose
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// ===== SCHEMA =====
+// ===== SCHEMAS =====
+
+// Upload Schema (existing feature)
 const uploadSchema = new mongoose.Schema({
   name: String,
   files: [
@@ -48,10 +50,25 @@ const uploadSchema = new mongoose.Schema({
   size: Number,
   date: { type: Date, default: Date.now },
 });
-
 const Upload = mongoose.model("Upload", uploadSchema);
 
+// Room Schema (new feature)
+const roomSchema = new mongoose.Schema({
+  key: { type: String, unique: true, required: true }, // unique room password
+  name: String, // creator name
+  files: [
+    {
+      name: String,
+      url: String,
+    },
+  ],
+  createdAt: { type: Date, default: Date.now },
+});
+const Room = mongoose.model("Room", roomSchema);
+
 // ===== ROUTES =====
+
+// ----------------- Upload Routes -----------------
 
 // Create new upload
 app.post("/api/uploads", async (req, res) => {
@@ -97,7 +114,7 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
-// ===== NEW: DELETE upload by code (for main admin) =====
+// Delete upload by code
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
     const deleted = await Upload.findOneAndDelete({ code: req.params.code });
@@ -108,6 +125,46 @@ app.delete("/api/uploads/:code", async (req, res) => {
   } catch (error) {
     console.error("Delete error:", error);
     res.status(500).json({ error: "Error deleting upload" });
+  }
+});
+
+// ----------------- Room Routes -----------------
+
+// Create Room
+app.post("/api/rooms/create", async (req, res) => {
+  try {
+    const { name, key } = req.body;
+
+    // check if key already exists
+    const existing = await Room.findOne({ key });
+    if (existing) {
+      return res.status(400).json({ error: "Room key already exists. Choose another." });
+    }
+
+    const newRoom = new Room({ name, key, files: [] });
+    await newRoom.save();
+
+    res.status(201).json({ message: "Room created", room: newRoom });
+  } catch (error) {
+    console.error("Room create error:", error);
+    res.status(500).json({ error: "Failed to create room" });
+  }
+});
+
+// Open Room
+app.post("/api/rooms/open", async (req, res) => {
+  try {
+    const { key } = req.body;
+
+    const room = await Room.findOne({ key });
+    if (!room) {
+      return res.status(404).json({ error: "Room not found" });
+    }
+
+    res.status(200).json({ message: "Room opened", room });
+  } catch (error) {
+    console.error("Room open error:", error);
+    res.status(500).json({ error: "Failed to open room" });
   }
 });
 
