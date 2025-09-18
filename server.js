@@ -1,196 +1,120 @@
-import React, { useState } from "react";
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+require("dotenv").config();
 
-export default function Room() {
-  const [tab, setTab] = useState("open");
-  const [name, setName] = useState("");
-  const [password, setPassword] = useState("");
-  const [room, setRoom] = useState(null);
-  const [files, setFiles] = useState([]);
-  const [error, setError] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null);
+const app = express();
+const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI;
 
-  // ===== Create Room =====
-  const handleCreateRoom = async () => {
-    try {
-      const res = await fetch("https://filehub-gyll.onrender.com/api/rooms/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, key: password }),
-      });
+// ===== MIDDLEWARE =====
+const allowedOrigins = [
+  "https://filehub-gyll.web.app",
+  "https://fileverse-krwk3.web.app",
+  "http://localhost:3000",
+  "https://fylshare.com"
+];
 
-      const data = await res.json();
-      if (res.ok) {
-        setRoom(data.room);
-        setFiles(data.room.files || []);
-        setError("");
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
       } else {
-        setError(data.error || "Failed to create room");
+        callback(new Error("Not allowed by CORS"));
       }
-    } catch {
-      setError("Server error while creating room");
     }
-  };
+  })
+);
 
-  // ===== Open Room =====
-  const handleOpenRoom = async () => {
-    try {
-      const res = await fetch("https://filehub-gyll.onrender.com/api/rooms/open", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: password }),
-      });
+app.use(express.json());
 
-      const data = await res.json();
-      if (res.ok) {
-        setRoom(data.room);
-        setFiles(data.room.files || []);
-        setError("");
-      } else {
-        setError(data.error || "Invalid password");
-      }
-    } catch {
-      setError("Server error while opening room");
-    }
-  };
+// ===== CONNECT TO MONGODB =====
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("✅ Connected to MongoDB Atlas"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-  // ===== Upload to Room =====
-  const handleFileUpload = async () => {
-    if (!selectedFile) return;
+// ===== SCHEMAS =====
+const uploadSchema = new mongoose.Schema({
+  name: String,
+  files: [{ name: String, url: String }],
+  code: String,
+  size: Number,
+  date: { type: Date, default: Date.now },
+});
+const Upload = mongoose.model("Upload", uploadSchema);
 
-    setUploading(true);
-    try {
-      const fileMeta = {
-        name: selectedFile.name,
-        url: URL.createObjectURL(selectedFile), // (for real app, upload to Firebase/S3 then save URL)
-      };
+const roomSchema = new mongoose.Schema({
+  key: { type: String, unique: true, required: true },
+  name: String,
+  files: [
+    {
+      code: String,
+      name: String,
+      url: String,
+      size: Number,
+      uploadedAt: { type: Date, default: Date.now },
+    },
+  ],
+  createdAt: { type: Date, default: Date.now },
+});
+const Room = mongoose.model("Room", roomSchema);
 
-      const res = await fetch(`https://filehub-gyll.onrender.com/api/rooms/${room.key}/upload`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          uploader: name || "Anonymous",
-          files: [fileMeta],
-          size: selectedFile.size / (1024 * 1024), // MB
-        }),
-      });
+// ===== ROUTES =====
+app.post("/api/rooms/create", async (req, res) => {
+  try {
+    const { name, key } = req.body;
+    const existing = await Room.findOne({ key });
+    if (existing) return res.status(400).json({ error: "Room key already exists" });
 
-      const data = await res.json();
-      if (res.ok) {
-        setFiles(data.room.files || []);
-        setError("");
-      } else {
-        setError(data.error || "Failed to upload file");
-      }
-    } catch {
-      setError("Server error while uploading");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  // ===== Login/Create UI =====
-  if (!room) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-black text-white font-[Orbitron]">
-        <div className="bg-[#0f172a] p-8 rounded-lg shadow-lg w-96">
-          <div className="flex justify-center mb-4 space-x-4">
-            <button
-              onClick={() => setTab("open")}
-              className={`px-4 py-2 rounded ${tab === "open" ? "bg-fuchsia-600" : "bg-gray-700"}`}
-            >
-              Open Room
-            </button>
-            <button
-              onClick={() => setTab("create")}
-              className={`px-4 py-2 rounded ${tab === "create" ? "bg-fuchsia-600" : "bg-gray-700"}`}
-            >
-              Create Room
-            </button>
-          </div>
-
-          <h2 className="text-2xl font-bold text-fuchsia-400 mb-4 text-center">
-            {tab === "open" ? "Open a Room" : "Create a Room"}
-          </h2>
-
-          {tab === "create" && (
-            <input
-              type="text"
-              placeholder="Your Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full p-2 mb-3 rounded bg-[#1e293b] text-white"
-            />
-          )}
-
-          <input
-            type="password"
-            placeholder="Room Password (Key)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-2 mb-4 rounded bg-[#1e293b] text-white"
-          />
-
-          <button
-            onClick={tab === "open" ? handleOpenRoom : handleCreateRoom}
-            className="w-full bg-fuchsia-600 hover:bg-fuchsia-700 text-white py-2 rounded font-bold"
-          >
-            {tab === "open" ? "Enter Room" : "Create Room"}
-          </button>
-
-          {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
-        </div>
-      </div>
-    );
+    const newRoom = new Room({ name, key, files: [] });
+    await newRoom.save();
+    res.status(201).json({ message: "Room created", room: newRoom });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create room" });
   }
+});
 
-  // ===== Room Dashboard =====
-  return (
-    <div className="min-h-screen bg-black text-white font-[Orbitron] p-8">
-      <h1 className="text-3xl font-bold text-fuchsia-400 mb-6">
-        Room Dashboard – {room.key}
-      </h1>
+app.post("/api/rooms/open", async (req, res) => {
+  try {
+    const { key } = req.body;
+    const room = await Room.findOne({ key });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+    res.status(200).json({ message: "Room opened", room });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to open room" });
+  }
+});
 
-      {room.name && <p className="mb-4 text-gray-300">Welcome, {room.name} 👋</p>}
+app.post("/api/rooms/:key/upload", async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { uploader, files, size } = req.body;
 
-      {/* Upload Section */}
-      <div className="mb-6">
-        <input
-          type="file"
-          onChange={(e) => setSelectedFile(e.target.files[0])}
-          className="mb-3"
-        />
-        <button
-          onClick={handleFileUpload}
-          disabled={uploading}
-          className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-white font-bold"
-        >
-          {uploading ? "Uploading..." : "Upload File"}
-        </button>
-      </div>
+    const room = await Room.findOne({ key });
+    if (!room) return res.status(404).json({ error: "Room not found" });
 
-      {/* File List */}
-      <div className="bg-[#111827] p-6 rounded-lg shadow-md">
-        <h2 className="text-xl font-semibold mb-3">Uploaded Files</h2>
-        {files.length === 0 ? (
-          <p className="text-gray-400">No files uploaded yet.</p>
-        ) : (
-          <ul className="space-y-3">
-            {files.map((file, i) => (
-              <li key={i} className="flex justify-between items-center bg-[#1e293b] p-2 rounded">
-                <div>
-                  <p className="font-semibold">{file.name}</p>
-                  <p className="text-sm text-gray-400">Code: {file.code}</p>
-                </div>
-                <div className="space-x-3">
-                  <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-400">👁 View</a>
-                  <a href={file.url} download className="text-green-400">⬇ Download</a>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const newUpload = new Upload({ name: uploader, code, files, size });
+    await newUpload.save();
+
+    room.files.push({
+      code,
+      name: files[0].name,
+      url: files[0].url,
+      size,
+    });
+    await room.save();
+
+    res.status(201).json({ message: "File uploaded to room", room, code });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to upload file to room" });
+  }
+});
+
+// ===== START SERVER =====
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
