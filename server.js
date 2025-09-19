@@ -42,7 +42,7 @@ app.use(bodyParser.json());
 // DB CONNECTION
 // -------------------------
 mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
@@ -51,7 +51,7 @@ mongoose
 // -------------------------
 const FileSchema = new mongoose.Schema({
   code: { type: String, required: true },
-  name: { type: String, required: true },
+  name: { type: String, required: true }, // uploader name
   files: [
     {
       name: String,
@@ -62,11 +62,11 @@ const FileSchema = new mongoose.Schema({
   uploadedBy: String,
   date: { type: Date, default: Date.now },
   type: { type: String, enum: ["general", "room"], default: "general" },
-  roomCode: { type: String, default: null },
+  roomCode: { type: String, default: null }, // string reference to room
 });
 
 const RoomSchema = new mongoose.Schema({
-  roomName: { type: String, required: true },
+  roomName: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
   files: [{ type: mongoose.Schema.Types.ObjectId, ref: "FileUpload" }],
@@ -89,7 +89,7 @@ app.post("/api/uploads", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const sizeMB = (size / 1024 / 1024).toFixed(2);
+    const sizeMB = size ? (size / 1024 / 1024).toFixed(2) : "0";
 
     const uploadEntry = new FileUpload({
       code,
@@ -118,6 +118,12 @@ app.post("/api/rooms/create", async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
+    // prevent duplicate room names
+    const existing = await Room.findOne({ roomName });
+    if (existing) {
+      return res.status(400).json({ error: "Room already exists" });
+    }
+
     const newRoom = new Room({ roomName, password });
     await newRoom.save();
     res.json(newRoom);
@@ -132,15 +138,16 @@ app.post("/api/rooms/create", async (req, res) => {
  */
 app.post("/api/rooms/upload", async (req, res) => {
   try {
-    const { roomCode, name, files, code, size } = req.body;
-    if (!roomCode || !name || !files || files.length === 0 || !code) {
+    const { roomName, name, files, code, size } = req.body;
+    if (!roomName || !name || !files || files.length === 0 || !code) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const sizeMB = (size / 1024 / 1024).toFixed(2);
+    const sizeMB = size ? (size / 1024 / 1024).toFixed(2) : "0";
 
+    // Save file
     const roomEntry = new FileUpload({
-      roomCode,
+      roomCode: roomName, // keep string reference
       code,
       name,
       files,
@@ -151,8 +158,12 @@ app.post("/api/rooms/upload", async (req, res) => {
 
     await roomEntry.save();
 
-    // attach file to the room
-    await Room.findByIdAndUpdate(roomCode, { $push: { files: roomEntry._id } });
+    // Attach file to room by roomName
+    await Room.findOneAndUpdate(
+      { roomName },
+      { $push: { files: roomEntry._id } },
+      { new: true }
+    );
 
     res.json(roomEntry);
   } catch (err) {
@@ -207,6 +218,14 @@ app.delete("/api/uploads/:code", async (req, res) => {
       return res.status(404).json({ error: "Upload not found" });
     }
 
+    // remove reference from Room if it was a room file
+    if (deleted.roomCode) {
+      await Room.findOneAndUpdate(
+        { roomName: deleted.roomCode },
+        { $pull: { files: deleted._id } }
+      );
+    }
+
     res.json({ success: true, code });
   } catch (err) {
     console.error("Delete error:", err);
@@ -217,10 +236,10 @@ app.delete("/api/uploads/:code", async (req, res) => {
 /**
  * Get Files of a Room
  */
-app.get("/api/rooms/:roomCode", async (req, res) => {
+app.get("/api/rooms/:roomName", async (req, res) => {
   try {
-    const { roomCode } = req.params;
-    const files = await FileUpload.find({ roomCode, type: "room" }).sort({
+    const { roomName } = req.params;
+    const files = await FileUpload.find({ roomCode: roomName, type: "room" }).sort({
       date: -1,
     });
     res.json(files);
