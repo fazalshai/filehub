@@ -36,81 +36,146 @@ mongoose
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // ===== SCHEMAS =====
+
+// General Upload Schema (no password)
 const uploadSchema = new mongoose.Schema({
   name: String,
-  files: [{ name: String, url: String }],
+  files: [
+    {
+      name: String,
+      url: String,
+    },
+  ],
   code: String,
   size: Number,
   date: { type: Date, default: Date.now },
 });
 const Upload = mongoose.model("Upload", uploadSchema);
 
+// Room Schema (password-protected uploads)
 const roomSchema = new mongoose.Schema({
-  key: { type: String, unique: true, required: true },
-  name: String,
+  name: String, // room creator
+  key: { type: String, unique: true, required: true }, // password
   files: [
     {
-      code: String,
+      uploader: String,
       name: String,
       url: String,
       size: Number,
-      uploadedAt: { type: Date, default: Date.now },
-    },
+      date: { type: Date, default: Date.now }
+    }
   ],
   createdAt: { type: Date, default: Date.now },
 });
 const Room = mongoose.model("Room", roomSchema);
 
-// ===== ROUTES =====
+// ==================== ROUTES ====================
+
+// -------- General Upload Routes --------
+app.post("/api/uploads", async (req, res) => {
+  try {
+    const { name, code, files, size } = req.body;
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
+    }
+
+    const newUpload = new Upload({ name, code, files, size });
+    await newUpload.save();
+
+    res.status(201).json({ message: "Upload saved", code });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ error: "Failed to save upload" });
+  }
+});
+
+app.get("/api/uploads/:code", async (req, res) => {
+  try {
+    const data = await Upload.findOne({ code: req.params.code });
+    if (!data) return res.status(404).json({ message: "No file found" });
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: "Error fetching file" });
+  }
+});
+
+app.get("/api/uploads", async (req, res) => {
+  try {
+    const uploads = await Upload.find().sort({ date: -1 });
+    res.json(uploads);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch uploads" });
+  }
+});
+
+app.delete("/api/uploads/:code", async (req, res) => {
+  try {
+    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
+    if (!deleted) return res.status(404).json({ message: "Not found" });
+    res.json({ message: "Deleted" });
+  } catch (error) {
+    res.status(500).json({ error: "Error deleting upload" });
+  }
+});
+
+// -------- Room Routes --------
+
+// Create new Room
 app.post("/api/rooms/create", async (req, res) => {
   try {
     const { name, key } = req.body;
+
     const existing = await Room.findOne({ key });
-    if (existing) return res.status(400).json({ error: "Room key already exists" });
+    if (existing) {
+      return res.status(400).json({ error: "Room password already exists" });
+    }
 
     const newRoom = new Room({ name, key, files: [] });
     await newRoom.save();
+
     res.status(201).json({ message: "Room created", room: newRoom });
-  } catch (err) {
+  } catch (error) {
     res.status(500).json({ error: "Failed to create room" });
   }
 });
 
+// Open Room by password
 app.post("/api/rooms/open", async (req, res) => {
   try {
     const { key } = req.body;
     const room = await Room.findOne({ key });
     if (!room) return res.status(404).json({ error: "Room not found" });
-    res.status(200).json({ message: "Room opened", room });
-  } catch (err) {
+    res.json({ message: "Room opened", room });
+  } catch (error) {
     res.status(500).json({ error: "Failed to open room" });
   }
 });
 
-app.post("/api/rooms/:key/upload", async (req, res) => {
+// Upload files into Room
+app.post("/api/rooms/upload", async (req, res) => {
   try {
-    const { key } = req.params;
-    const { uploader, files, size } = req.body;
+    const { key, uploader, files } = req.body;
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
+    }
 
     const room = await Room.findOne({ key });
     if (!room) return res.status(404).json({ error: "Room not found" });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-    const newUpload = new Upload({ name: uploader, code, files, size });
-    await newUpload.save();
-
-    room.files.push({
-      code,
-      name: files[0].name,
-      url: files[0].url,
-      size,
+    files.forEach(f => {
+      room.files.push({
+        uploader,
+        name: f.name,
+        url: f.url,
+        size: f.size || 0,
+        date: new Date()
+      });
     });
-    await room.save();
 
-    res.status(201).json({ message: "File uploaded to room", room, code });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to upload file to room" });
+    await room.save();
+    res.json({ message: "Files uploaded to room", room });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to upload files to room" });
   }
 });
 
