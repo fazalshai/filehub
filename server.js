@@ -56,7 +56,7 @@ const FileSchema = new mongoose.Schema({
   uploadedBy: String,
   date: { type: Date, default: Date.now },
   type: { type: String, enum: ["general", "room"], default: "general" },
-  roomName: { type: String, default: null }, // ✅ consistent
+  roomName: { type: String, default: null },
 });
 
 const RoomSchema = new mongoose.Schema({
@@ -117,6 +117,29 @@ app.post("/api/rooms/create", async (req, res) => {
   }
 });
 
+// Open Room (check password + return files)
+app.post("/api/rooms/open", async (req, res) => {
+  try {
+    const { roomName, password } = req.body;
+    if (!roomName || !password) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    const room = await Room.findOne({ roomName });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    if (room.password !== password) {
+      return res.status(401).json({ error: "Invalid password" });
+    }
+
+    const files = await FileUpload.find({ roomName, type: "room" }).sort({ date: -1 });
+    res.json({ room, files });
+  } catch (err) {
+    console.error("Room open error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Room Uploads
 app.post("/api/rooms/upload", async (req, res) => {
   try {
@@ -139,7 +162,6 @@ app.post("/api/rooms/upload", async (req, res) => {
 
     await roomEntry.save();
 
-    // Attach file to the room by name
     await Room.findOneAndUpdate(
       { roomName },
       { $push: { files: roomEntry._id } },
@@ -200,13 +222,32 @@ app.delete("/api/uploads/:code", async (req, res) => {
   }
 });
 
+// Delete Entire Room + Its Files
+app.delete("/api/rooms/:roomName", async (req, res) => {
+  try {
+    const { roomName } = req.params;
+    const room = await Room.findOne({ roomName });
+
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    // delete files linked to this room
+    await FileUpload.deleteMany({ roomName });
+
+    // delete room itself
+    await Room.deleteOne({ roomName });
+
+    res.json({ success: true, roomName });
+  } catch (err) {
+    console.error("Room delete error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Get Files of a Room
 app.get("/api/rooms/:roomName", async (req, res) => {
   try {
     const { roomName } = req.params;
-    const files = await FileUpload.find({ roomName, type: "room" }).sort({
-      date: -1,
-    });
+    const files = await FileUpload.find({ roomName, type: "room" }).sort({ date: -1 });
     res.json(files);
   } catch (err) {
     console.error("Room fetch error:", err);
