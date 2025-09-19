@@ -10,9 +10,9 @@ const MONGO_URI = process.env.MONGO_URI;
 
 // ===== CORS =====
 const allowedOrigins = [
-  "http://localhost:3000",        // React local dev
-  "http://localhost:3002",        // another local port
-  "https://filehub-gyll.web.app", // your deployed frontend
+  "http://localhost:3000",
+  "http://localhost:3002",
+  "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
   "https://fylshare.com"
 ];
@@ -60,6 +60,7 @@ const roomSchema = new mongoose.Schema({
   name: String, // room creator
   files: [
     {
+      code: String,       // unique code per file
       uploader: String,
       name: String,
       url: String,
@@ -170,7 +171,9 @@ app.post("/api/rooms/:key/files", async (req, res) => {
     }
 
     files.forEach((file) => {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
       room.files.push({
+        code,
         uploader,
         name: file.name,
         url: file.url,
@@ -198,15 +201,15 @@ app.get("/api/rooms", async (req, res) => {
 });
 
 // Delete a file from a room
-app.delete("/api/rooms/:key/files/:filename", async (req, res) => {
+app.delete("/api/rooms/:key/files/:code", async (req, res) => {
   try {
-    const { key, filename } = req.params;
+    const { key, code } = req.params;
     const room = await Room.findOne({ key });
     if (!room) {
       return res.status(404).json({ error: "Room not found" });
     }
 
-    room.files = room.files.filter((f) => f.name !== filename);
+    room.files = room.files.filter((f) => f.code !== code);
     await room.save();
 
     res.json({ message: "File deleted from room" });
