@@ -14,7 +14,7 @@ const allowedOrigins = [
   "http://localhost:3002",
   "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
-  "https://fylshare.com"
+  "https://fylshare.com",
 ];
 
 app.use(
@@ -25,7 +25,7 @@ app.use(
       } else {
         callback(new Error("Not allowed by CORS"));
       }
-    }
+    },
   })
 );
 
@@ -37,46 +37,45 @@ mongoose
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// ===== Helper for unique 6-digit codes =====
-function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
 // ===== SCHEMAS =====
 
 // General Upload Schema
 const uploadSchema = new mongoose.Schema({
-  name: String,
+  name: String, // uploader
   files: [
     {
-      code: String, // NEW: unique per file
       name: String,
       url: String,
-      size: Number,
-      date: { type: Date, default: Date.now }
-    }
+    },
   ],
-  createdAt: { type: Date, default: Date.now }
+  code: String, // 6-digit code
+  size: Number,
+  date: { type: Date, default: Date.now },
 });
 const Upload = mongoose.model("Upload", uploadSchema);
 
 // Room Schema
 const roomSchema = new mongoose.Schema({
-  key: { type: String, unique: true, required: true }, // room password
+  key: { type: String, unique: true, required: true },
   name: String, // room creator
   files: [
     {
-      code: String, // NEW: unique per file
-      uploader: String,
+      code: String, // same as Upload.code
       name: String,
       url: String,
       size: Number,
-      date: { type: Date, default: Date.now }
-    }
+      uploader: String,
+      date: { type: Date, default: Date.now },
+    },
   ],
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 const Room = mongoose.model("Room", roomSchema);
+
+// Utility: generate 6-digit code
+function generateCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 // ===== ROUTES =====
 
@@ -85,34 +84,27 @@ const Room = mongoose.model("Room", roomSchema);
 // Create new upload
 app.post("/api/uploads", async (req, res) => {
   try {
-    const { name, files } = req.body;
+    const { name, files, size } = req.body;
 
     if (!files || files.length === 0) {
       return res.status(400).json({ error: "No files provided" });
     }
 
-    // Assign unique code to each file
-    const filesWithCodes = files.map((f) => ({
-      code: generateCode(),
-      name: f.name,
-      url: f.url,
-      size: f.size
-    }));
-
-    const newUpload = new Upload({ name, files: filesWithCodes });
+    const code = generateCode();
+    const newUpload = new Upload({ name, code, files, size });
     await newUpload.save();
 
-    res.status(201).json({ message: "Upload metadata saved", upload: newUpload });
+    res.status(201).json({ message: "Upload metadata saved", code, upload: newUpload });
   } catch (error) {
     console.error("Upload error:", error);
     res.status(500).json({ error: "Failed to save upload metadata" });
   }
 });
 
-// Get all uploads (Admin use)
+// Get all uploads
 app.get("/api/uploads", async (req, res) => {
   try {
-    const uploads = await Upload.find().sort({ createdAt: -1 });
+    const uploads = await Upload.find().sort({ date: -1 });
     res.json(uploads);
   } catch (err) {
     console.error("Admin fetch error:", err);
@@ -120,23 +112,17 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
-// Delete upload file by code
+// Delete upload
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
-    const { code } = req.params;
-    const upload = await Upload.findOne({ "files.code": code });
-
-    if (!upload) {
-      return res.status(404).json({ message: "No upload found with this file code" });
+    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
+    if (!deleted) {
+      return res.status(404).json({ message: "No upload found with this code" });
     }
-
-    upload.files = upload.files.filter((f) => f.code !== code);
-    await upload.save();
-
-    res.status(200).json({ message: "File deleted successfully" });
+    res.status(200).json({ message: "Upload deleted successfully" });
   } catch (error) {
     console.error("Delete error:", error);
-    res.status(500).json({ error: "Error deleting file" });
+    res.status(500).json({ error: "Error deleting upload" });
   }
 });
 
@@ -179,24 +165,28 @@ app.post("/api/rooms/open", async (req, res) => {
   }
 });
 
-// Add file to a room
+// Add file to a room (also saved in Uploads)
 app.post("/api/rooms/:key/files", async (req, res) => {
   try {
     const { key } = req.params;
-    const { uploader, files } = req.body;
+    const { uploader, files, size } = req.body;
 
     const room = await Room.findOne({ key });
     if (!room) {
       return res.status(404).json({ error: "Room not found" });
     }
 
+    const code = generateCode();
+    const newUpload = new Upload({ name: uploader, code, files, size });
+    await newUpload.save();
+
     files.forEach((file) => {
       room.files.push({
-        code: generateCode(),
+        code,
         uploader,
         name: file.name,
         url: file.url,
-        size: file.size
+        size: file.size,
       });
     });
 
@@ -208,7 +198,7 @@ app.post("/api/rooms/:key/files", async (req, res) => {
   }
 });
 
-// Get all rooms (Admin use)
+// Get all rooms
 app.get("/api/rooms", async (req, res) => {
   try {
     const rooms = await Room.find().sort({ createdAt: -1 });
@@ -231,7 +221,10 @@ app.delete("/api/rooms/:key/files/:code", async (req, res) => {
     room.files = room.files.filter((f) => f.code !== code);
     await room.save();
 
-    res.json({ message: "File deleted from room" });
+    // also delete from Uploads
+    await Upload.findOneAndDelete({ code });
+
+    res.json({ message: "File deleted from room & uploads" });
   } catch (error) {
     console.error("Delete room file error:", error);
     res.status(500).json({ error: "Failed to delete file from room" });
