@@ -10,9 +10,32 @@ require("dotenv").config();
 // -------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
+const MONGO_URI =
+  process.env.MONGO_URI || "mongodb://127.0.0.1:27017/fylshare";
 
-app.use(cors());
+// Allowed origins
+const allowedOrigins = [
+  "https://filehub-gyll.web.app",
+  "https://fileverse-krwk3.web.app",
+  "http://localhost:3000",
+  "http://localhost:3002",
+  "https://fylshare.com",
+];
+
+// CORS middleware
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  })
+);
+
 app.use(bodyParser.json());
 
 // -------------------------
@@ -57,7 +80,7 @@ const Room = mongoose.model("Room", RoomSchema);
 // -------------------------
 
 /**
- * General Uploads
+ * Uploads (General)
  */
 app.post("/api/uploads", async (req, res) => {
   try {
@@ -128,7 +151,7 @@ app.post("/api/rooms/upload", async (req, res) => {
 
     await roomEntry.save();
 
-    // also attach file to the room
+    // attach file to the room
     await Room.findByIdAndUpdate(roomCode, { $push: { files: roomEntry._id } });
 
     res.json(roomEntry);
@@ -197,7 +220,9 @@ app.delete("/api/uploads/:code", async (req, res) => {
 app.get("/api/rooms/:roomCode", async (req, res) => {
   try {
     const { roomCode } = req.params;
-    const files = await FileUpload.find({ roomCode, type: "room" }).sort({ date: -1 });
+    const files = await FileUpload.find({ roomCode, type: "room" }).sort({
+      date: -1,
+    });
     res.json(files);
   } catch (err) {
     console.error("Room fetch error:", err);
