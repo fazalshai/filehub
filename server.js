@@ -37,6 +37,11 @@ mongoose
   .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
+// ===== Helper for unique 6-digit codes =====
+function generateCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 // ===== SCHEMAS =====
 
 // General Upload Schema
@@ -44,13 +49,14 @@ const uploadSchema = new mongoose.Schema({
   name: String,
   files: [
     {
+      code: String, // NEW: unique per file
       name: String,
       url: String,
-    },
+      size: Number,
+      date: { type: Date, default: Date.now }
+    }
   ],
-  code: String,
-  size: Number,
-  date: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now }
 });
 const Upload = mongoose.model("Upload", uploadSchema);
 
@@ -60,15 +66,15 @@ const roomSchema = new mongoose.Schema({
   name: String, // room creator
   files: [
     {
-      code: String,       // unique code per file
+      code: String, // NEW: unique per file
       uploader: String,
       name: String,
       url: String,
       size: Number,
-      date: { type: Date, default: Date.now },
-    },
+      date: { type: Date, default: Date.now }
+    }
   ],
-  createdAt: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now }
 });
 const Room = mongoose.model("Room", roomSchema);
 
@@ -79,16 +85,24 @@ const Room = mongoose.model("Room", roomSchema);
 // Create new upload
 app.post("/api/uploads", async (req, res) => {
   try {
-    const { name, code, files, size } = req.body;
+    const { name, files } = req.body;
 
     if (!files || files.length === 0) {
       return res.status(400).json({ error: "No files provided" });
     }
 
-    const newUpload = new Upload({ name, code, files, size });
+    // Assign unique code to each file
+    const filesWithCodes = files.map((f) => ({
+      code: generateCode(),
+      name: f.name,
+      url: f.url,
+      size: f.size
+    }));
+
+    const newUpload = new Upload({ name, files: filesWithCodes });
     await newUpload.save();
 
-    res.status(201).json({ message: "Upload metadata saved", code });
+    res.status(201).json({ message: "Upload metadata saved", upload: newUpload });
   } catch (error) {
     console.error("Upload error:", error);
     res.status(500).json({ error: "Failed to save upload metadata" });
@@ -98,7 +112,7 @@ app.post("/api/uploads", async (req, res) => {
 // Get all uploads (Admin use)
 app.get("/api/uploads", async (req, res) => {
   try {
-    const uploads = await Upload.find().sort({ date: -1 });
+    const uploads = await Upload.find().sort({ createdAt: -1 });
     res.json(uploads);
   } catch (err) {
     console.error("Admin fetch error:", err);
@@ -106,17 +120,23 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
-// Delete upload by code
+// Delete upload file by code
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
-    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
-    if (!deleted) {
-      return res.status(404).json({ message: "No upload found with this code" });
+    const { code } = req.params;
+    const upload = await Upload.findOne({ "files.code": code });
+
+    if (!upload) {
+      return res.status(404).json({ message: "No upload found with this file code" });
     }
-    res.status(200).json({ message: "Upload deleted successfully" });
+
+    upload.files = upload.files.filter((f) => f.code !== code);
+    await upload.save();
+
+    res.status(200).json({ message: "File deleted successfully" });
   } catch (error) {
     console.error("Delete error:", error);
-    res.status(500).json({ error: "Error deleting upload" });
+    res.status(500).json({ error: "Error deleting file" });
   }
 });
 
@@ -171,13 +191,12 @@ app.post("/api/rooms/:key/files", async (req, res) => {
     }
 
     files.forEach((file) => {
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
       room.files.push({
-        code,
+        code: generateCode(),
         uploader,
         name: file.name,
         url: file.url,
-        size: file.size,
+        size: file.size
       });
     });
 
