@@ -10,8 +10,7 @@ require("dotenv").config();
 // -------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI =
-  process.env.MONGO_URI || "mongodb://127.0.0.1:27017/fylshare";
+const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/fylshare";
 
 // Allowed origins
 const allowedOrigins = [
@@ -42,7 +41,7 @@ app.use(bodyParser.json());
 // DB CONNECTION
 // -------------------------
 mongoose
-  .connect(MONGO_URI)
+  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
@@ -51,22 +50,17 @@ mongoose
 // -------------------------
 const FileSchema = new mongoose.Schema({
   code: { type: String, required: true },
-  name: { type: String, required: true }, // uploader name
-  files: [
-    {
-      name: String,
-      url: String,
-    },
-  ],
+  name: { type: String, required: true },
+  files: [{ name: String, url: String }],
   size: String,
   uploadedBy: String,
   date: { type: Date, default: Date.now },
   type: { type: String, enum: ["general", "room"], default: "general" },
-  roomCode: { type: String, default: null }, // string reference to room
+  roomName: { type: String, default: null }, // ✅ consistent
 });
 
 const RoomSchema = new mongoose.Schema({
-  roomName: { type: String, required: true, unique: true },
+  roomName: { type: String, required: true },
   password: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
   files: [{ type: mongoose.Schema.Types.ObjectId, ref: "FileUpload" }],
@@ -79,9 +73,7 @@ const Room = mongoose.model("Room", RoomSchema);
 // ROUTES
 // -------------------------
 
-/**
- * Uploads (General)
- */
+// Uploads (General)
 app.post("/api/uploads", async (req, res) => {
   try {
     const { name, files, code, size } = req.body;
@@ -89,7 +81,7 @@ app.post("/api/uploads", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const sizeMB = size ? (size / 1024 / 1024).toFixed(2) : "0";
+    const sizeMB = (size / 1024 / 1024).toFixed(2);
 
     const uploadEntry = new FileUpload({
       code,
@@ -108,20 +100,12 @@ app.post("/api/uploads", async (req, res) => {
   }
 });
 
-/**
- * Create Room
- */
+// Create Room
 app.post("/api/rooms/create", async (req, res) => {
   try {
     const { roomName, password } = req.body;
     if (!roomName || !password) {
       return res.status(400).json({ error: "Missing fields" });
-    }
-
-    // prevent duplicate room names
-    const existing = await Room.findOne({ roomName });
-    if (existing) {
-      return res.status(400).json({ error: "Room already exists" });
     }
 
     const newRoom = new Room({ roomName, password });
@@ -133,9 +117,7 @@ app.post("/api/rooms/create", async (req, res) => {
   }
 });
 
-/**
- * Room Uploads
- */
+// Room Uploads
 app.post("/api/rooms/upload", async (req, res) => {
   try {
     const { roomName, name, files, code, size } = req.body;
@@ -143,11 +125,10 @@ app.post("/api/rooms/upload", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const sizeMB = size ? (size / 1024 / 1024).toFixed(2) : "0";
+    const sizeMB = (size / 1024 / 1024).toFixed(2);
 
-    // Save file
     const roomEntry = new FileUpload({
-      roomCode: roomName, // keep string reference
+      roomName,
       code,
       name,
       files,
@@ -158,7 +139,7 @@ app.post("/api/rooms/upload", async (req, res) => {
 
     await roomEntry.save();
 
-    // Attach file to room by roomName
+    // Attach file to the room by name
     await Room.findOneAndUpdate(
       { roomName },
       { $push: { files: roomEntry._id } },
@@ -172,9 +153,7 @@ app.post("/api/rooms/upload", async (req, res) => {
   }
 });
 
-/**
- * Get Upload by Code (Search)
- */
+// Get Upload by Code (Search)
 app.get("/api/uploads/:code", async (req, res) => {
   try {
     const { code } = req.params;
@@ -191,9 +170,7 @@ app.get("/api/uploads/:code", async (req, res) => {
   }
 });
 
-/**
- * Get All Uploads (Admin)
- */
+// Get All Uploads (Admin)
 app.get("/api/uploads", async (req, res) => {
   try {
     const general = await FileUpload.find({ type: "general" }).sort({ date: -1 });
@@ -206,9 +183,7 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
-/**
- * Delete Upload by Code
- */
+// Delete Upload by Code
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
     const { code } = req.params;
@@ -218,14 +193,6 @@ app.delete("/api/uploads/:code", async (req, res) => {
       return res.status(404).json({ error: "Upload not found" });
     }
 
-    // remove reference from Room if it was a room file
-    if (deleted.roomCode) {
-      await Room.findOneAndUpdate(
-        { roomName: deleted.roomCode },
-        { $pull: { files: deleted._id } }
-      );
-    }
-
     res.json({ success: true, code });
   } catch (err) {
     console.error("Delete error:", err);
@@ -233,13 +200,11 @@ app.delete("/api/uploads/:code", async (req, res) => {
   }
 });
 
-/**
- * Get Files of a Room
- */
+// Get Files of a Room
 app.get("/api/rooms/:roomName", async (req, res) => {
   try {
     const { roomName } = req.params;
-    const files = await FileUpload.find({ roomCode: roomName, type: "room" }).sort({
+    const files = await FileUpload.find({ roomName, type: "room" }).sort({
       date: -1,
     });
     res.json(files);
