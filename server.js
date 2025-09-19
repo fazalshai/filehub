@@ -1,210 +1,148 @@
 // server.js
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
-require("dotenv").config();
+const bodyParser = require("body-parser");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
 
-// ===== CORS =====
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3002",
-  "https://filehub-gyll.web.app",
-  "https://fileverse-krwk3.web.app",
-  "https://fylshare.com"
-];
+app.use(cors());
+app.use(bodyParser.json());
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    }
-  })
-);
+// In-memory storage (replace with DB later if needed)
+let generalUploads = [];
+let roomUploads = [];
 
-app.use(express.json());
-
-// ===== CONNECT TO MONGODB =====
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log("✅ Connected to MongoDB Atlas"))
-  .catch((err) => console.error("❌ MongoDB connection error:", err));
-
-// ===== SCHEMAS =====
-const uploadSchema = new mongoose.Schema({
-  name: String,
-  files: [
-    {
-      name: String,
-      url: String,
-    },
-  ],
-  code: String,
-  size: Number,
-  date: { type: Date, default: Date.now },
-});
-const Upload = mongoose.model("Upload", uploadSchema);
-
-const roomSchema = new mongoose.Schema({
-  key: { type: String, unique: true, required: true },
-  name: String,
-  files: [
-    {
-      uploader: String,
-      name: String,
-      url: String,
-      size: Number,
-      date: { type: Date, default: Date.now },
-      code: String, // added to align with uploads
-    },
-  ],
-  createdAt: { type: Date, default: Date.now },
-});
-const Room = mongoose.model("Room", roomSchema);
-
-// ===== ROUTES =====
-
-// ----------------- Upload Routes -----------------
-
-// Create new upload
-app.post("/api/uploads", async (req, res) => {
+/**
+ * ===============================
+ * Uploads (General)
+ * ===============================
+ */
+app.post("/api/uploads", (req, res) => {
   try {
-    const { name, code, files, size } = req.body;
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files provided" });
+    const { name, files, code, size } = req.body;
+    if (!name || !files || files.length === 0 || !code) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
-    const newUpload = new Upload({ name, code, files, size });
-    await newUpload.save();
-    res.status(201).json({ message: "Upload metadata saved", code });
-  } catch (error) {
-    console.error("Upload error:", error);
-    res.status(500).json({ error: "Failed to save upload metadata" });
-  }
-});
 
-// Get all uploads (Admin)
-app.get("/api/uploads", async (req, res) => {
-  try {
-    const uploads = await Upload.find().sort({ date: -1 });
-    res.json(uploads);
+    const sizeMB = (size / 1024 / 1024).toFixed(2);
+
+    const uploadEntry = {
+      code,
+      name,
+      files,
+      size: sizeMB,
+      uploadedBy: name,
+      date: new Date(),
+      type: "general",
+    };
+
+    generalUploads.push(uploadEntry);
+    res.json(uploadEntry);
   } catch (err) {
-    res.status(500).json({ error: "Failed to fetch uploads" });
+    console.error("Upload error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ✅ Get upload by code
-app.get("/api/uploads/:code", async (req, res) => {
+/**
+ * ===============================
+ * Room Uploads
+ * ===============================
+ */
+app.post("/api/rooms/upload", (req, res) => {
   try {
-    const upload = await Upload.findOne({ code: req.params.code });
-    if (!upload) {
-      return res.status(404).json({ error: "No file found for this code" });
+    const { roomCode, name, files, code, size } = req.body;
+    if (!roomCode || !name || !files || files.length === 0 || !code) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
-    res.json(upload);
-  } catch (error) {
-    console.error("Fetch upload by code error:", error);
-    res.status(500).json({ error: "Failed to fetch upload" });
+
+    const sizeMB = (size / 1024 / 1024).toFixed(2);
+
+    const roomEntry = {
+      roomCode,
+      code,
+      name,
+      files,
+      size: sizeMB,
+      uploadedBy: name,
+      date: new Date(),
+      type: "room",
+    };
+
+    roomUploads.push(roomEntry);
+    res.json(roomEntry);
+  } catch (err) {
+    console.error("Room upload error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// Delete upload by code
-app.delete("/api/uploads/:code", async (req, res) => {
-  try {
-    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
-    if (!deleted) {
-      return res.status(404).json({ message: "No upload found with this code" });
-    }
-    res.status(200).json({ message: "Upload deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ error: "Error deleting upload" });
+/**
+ * ===============================
+ * GET Upload by Code (for Search)
+ * ===============================
+ */
+app.get("/api/uploads/:code", (req, res) => {
+  const { code } = req.params;
+  const allUploads = [...generalUploads, ...roomUploads];
+  const found = allUploads.find((u) => u.code === code);
+
+  if (!found) {
+    return res.status(404).json({ error: "No file found for this code" });
   }
+  res.json(found);
 });
 
-// ----------------- Room Routes -----------------
-
-app.post("/api/rooms/create", async (req, res) => {
-  try {
-    const { name, key } = req.body;
-    const existing = await Room.findOne({ key });
-    if (existing) {
-      return res.status(400).json({ error: "Room key already exists" });
-    }
-    const newRoom = new Room({ name, key, files: [] });
-    await newRoom.save();
-    res.status(201).json({ message: "Room created", room: newRoom });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to create room" });
-  }
+/**
+ * ===============================
+ * GET All Uploads (for Admin)
+ * ===============================
+ */
+app.get("/api/uploads", (req, res) => {
+  const allUploads = [...generalUploads, ...roomUploads];
+  // Sort newest first
+  allUploads.sort((a, b) => new Date(b.date) - new Date(a.date));
+  res.json(allUploads);
 });
 
-app.post("/api/rooms/open", async (req, res) => {
-  try {
-    const { key } = req.body;
-    const room = await Room.findOne({ key });
-    if (!room) {
-      return res.status(404).json({ error: "Room not found" });
-    }
-    res.status(200).json({ message: "Room opened", room });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to open room" });
+/**
+ * ===============================
+ * DELETE Upload by Code
+ * ===============================
+ */
+app.delete("/api/uploads/:code", (req, res) => {
+  const { code } = req.params;
+  const beforeCount = generalUploads.length + roomUploads.length;
+
+  generalUploads = generalUploads.filter((u) => u.code !== code);
+  roomUploads = roomUploads.filter((u) => u.code !== code);
+
+  const afterCount = generalUploads.length + roomUploads.length;
+
+  if (afterCount === beforeCount) {
+    return res.status(404).json({ error: "Upload not found" });
   }
+
+  res.json({ success: true, code });
 });
 
-app.post("/api/rooms/:key/files", async (req, res) => {
-  try {
-    const { key } = req.params;
-    const { uploader, files } = req.body;
-    const room = await Room.findOne({ key });
-    if (!room) {
-      return res.status(404).json({ error: "Room not found" });
-    }
-    files.forEach((file) => {
-      room.files.push({
-        uploader,
-        name: file.name,
-        url: file.url,
-        size: file.size,
-        code: file.code || Math.floor(100000 + Math.random() * 900000).toString(),
-      });
-    });
-    await room.save();
-    res.json({ message: "Files added to room", room });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to add files to room" });
-  }
+/**
+ * ===============================
+ * GET Room Uploads (for Room.js)
+ * ===============================
+ */
+app.get("/api/rooms/:roomCode", (req, res) => {
+  const { roomCode } = req.params;
+  const files = roomUploads.filter((u) => u.roomCode === roomCode);
+  res.json(files);
 });
 
-app.get("/api/rooms", async (req, res) => {
-  try {
-    const rooms = await Room.find().sort({ createdAt: -1 });
-    res.json(rooms);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch rooms" });
-  }
-});
-
-app.delete("/api/rooms/:key/files/:filename", async (req, res) => {
-  try {
-    const { key, filename } = req.params;
-    const room = await Room.findOne({ key });
-    if (!room) {
-      return res.status(404).json({ error: "Room not found" });
-    }
-    room.files = room.files.filter((f) => f.name !== filename);
-    await room.save();
-    res.json({ message: "File deleted from room" });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to delete file from room" });
-  }
-});
-
-// ===== START SERVER =====
+/**
+ * ===============================
+ * Server Start
+ * ===============================
+ */
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
