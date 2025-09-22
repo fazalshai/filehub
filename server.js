@@ -1,197 +1,119 @@
 const express = require("express");
-const cors = require("cors");
-const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
-require("dotenv").config();  // To load the environment variables
+const cors = require("cors");
+require("dotenv").config();
 
-// -------------------------
-// CONFIG
-// -------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://fazalshaik24434_db_user:iPxI9z2vzHFw4zpC@cluster0.brelwu6.mongodb.net/fylshare?retryWrites=true&w=majority"; // Replace with your Mongo URI
+const MONGO_URI = process.env.MONGO_URI;
 
-// Allowed origins
+// ===== MIDDLEWARE =====
 const allowedOrigins = [
   "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
   "http://localhost:3000",
-  "http://localhost:3002",
-   "http://localhost:3003",
-  "https://fylshare.com",
+   "http://localhost:3001",
+   "http://localhost:3002",
+  "https://fylshare.com"
 ];
 
-// CORS middleware
 app.use(
   cors({
-    origin: (origin, callback) => {
+    origin: function (origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error("Not allowed by CORS"));
       }
-    },
-    credentials: true,
+    }
   })
 );
 
-app.use(bodyParser.json());
+app.use(express.json());
 
-// -------------------------
-// DB CONNECTION
-// -------------------------
+// ===== CONNECT TO MONGODB =====
 mongoose
   .connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
+  .then(() => console.log("✅ Connected to MongoDB Atlas"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// -------------------------
-// SCHEMAS + MODELS
-// -------------------------
-const FileSchema = new mongoose.Schema({
-  code: { type: String, required: true },
-  name: { type: String, required: true },
-  files: [{ name: String, url: String }],
-  size: String,
-  uploadedBy: String,
+// ===== SCHEMA =====
+const uploadSchema = new mongoose.Schema({
+  name: String,
+  files: [
+    {
+      name: String,
+      url: String,
+    },
+  ],
+  code: String,
+  size: Number,
   date: { type: Date, default: Date.now },
-  type: { type: String, enum: ["general", "room"], default: "general" },
-  roomPassword: { type: String, default: null }, // 🔑 link to room by password
 });
 
-const RoomSchema = new mongoose.Schema({
-  password: { type: String, required: true, unique: true }, // 🔑 unique room password
-  createdAt: { type: Date, default: Date.now },
-  files: [{ type: mongoose.Schema.Types.ObjectId, ref: "FileUpload" }],
-});
+const Upload = mongoose.model("Upload", uploadSchema);
 
-const FileUpload = mongoose.model("FileUpload", FileSchema);
-const Room = mongoose.model("Room", RoomSchema);
+// ===== ROUTES =====
 
-// -------------------------
-// ROUTES
-// -------------------------
-
-// Uploads (General)
+// Create new upload
 app.post("/api/uploads", async (req, res) => {
   try {
-    const { name, files, code, size } = req.body;
-    if (!name || !files || files.length === 0 || !code) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const { name, code, files, size } = req.body;
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
     }
 
-    const sizeMB = (size / 1024 / 1024).toFixed(2);
+    const newUpload = new Upload({ name, code, files, size });
+    await newUpload.save();
 
-    const uploadEntry = new FileUpload({
-      code,
-      name,
-      files,
-      size: sizeMB,
-      uploadedBy: name,
-      type: "general",
-    });
-
-    await uploadEntry.save();
-    res.json(uploadEntry);
-  } catch (err) {
-    console.error("Upload error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(201).json({ message: "Upload metadata saved", code });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ error: "Failed to save upload metadata" });
   }
 });
 
-// Create Room (password only)
-app.post("/api/rooms/create", async (req, res) => {
+// Get a single upload by code
+app.get("/api/uploads/:code", async (req, res) => {
   try {
-    const { password } = req.body;
-    if (!password) {
-      return res.status(400).json({ error: "Missing password" });
+    const data = await Upload.findOne({ code: req.params.code });
+    if (!data) {
+      return res.status(404).json({ message: "No file found for this code" });
     }
-
-    const existing = await Room.findOne({ password });
-    if (existing) return res.status(400).json({ error: "Room already exists" });
-
-    const newRoom = new Room({ password });
-    await newRoom.save();
-    res.json({ room: newRoom });
-  } catch (err) {
-    console.error("Room creation error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.json(data);
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ error: "Error fetching file" });
   }
 });
 
-// Open Room (by password)
-app.post("/api/rooms/open", async (req, res) => {
+// Get all uploads (admin use)
+app.get("/api/uploads", async (req, res) => {
   try {
-    const { password } = req.body;
-    if (!password) {
-      return res.status(400).json({ error: "Missing password" });
+    const uploads = await Upload.find().sort({ date: -1 });
+    res.json(uploads);
+  } catch (err) {
+    console.error("Admin fetch error:", err);
+    res.status(500).json({ error: "Failed to fetch uploads" });
+  }
+});
+
+// ===== NEW: DELETE upload by code (for main admin) =====
+app.delete("/api/uploads/:code", async (req, res) => {
+  try {
+    const deleted = await Upload.findOneAndDelete({ code: req.params.code });
+    if (!deleted) {
+      return res.status(404).json({ message: "No upload found with this code" });
     }
-
-    const room = await Room.findOne({ password }).populate("files");
-    if (!room) return res.status(404).json({ error: "Room not found" });
-
-    res.json({ room });
-  } catch (err) {
-    console.error("Room open error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(200).json({ message: "Upload deleted successfully" });
+  } catch (error) {
+    console.error("Delete error:", error);
+    res.status(500).json({ error: "Error deleting upload" });
   }
 });
 
-// Room Uploads
-app.post("/api/rooms/upload", async (req, res) => {
-  try {
-    const { roomPassword, name, files, code, size } = req.body;
-    if (!roomPassword || !name || !files || files.length === 0 || !code) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    const sizeMB = (size / 1024 / 1024).toFixed(2);
-
-    const roomEntry = new FileUpload({
-      roomPassword,
-      code,
-      name,
-      files,
-      size: sizeMB,
-      uploadedBy: name,
-      type: "room",
-    });
-
-    await roomEntry.save();
-
-    await Room.findOneAndUpdate(
-      { password: roomPassword },
-      { $push: { files: roomEntry._id } },
-      { new: true }
-    );
-
-    res.json(roomEntry);
-  } catch (err) {
-    console.error("Room upload error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Delete Entire Room
-app.delete("/api/rooms/:password", async (req, res) => {
-  try {
-    const { password } = req.params;
-    const room = await Room.findOne({ password });
-    if (!room) return res.status(404).json({ error: "Room not found" });
-
-    await FileUpload.deleteMany({ roomPassword: password });
-    await Room.deleteOne({ password });
-
-    res.json({ success: true, password });
-  } catch (err) {
-    console.error("Room delete error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// -------------------------
-// START SERVER
-// -------------------------
+// ===== START SERVER =====
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(🚀 Server running on port ${PORT});
 });
