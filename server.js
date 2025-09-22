@@ -1,16 +1,15 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
-require("dotenv").config();
+require("dotenv").config();  // To load the environment variables
 
 // -------------------------
 // CONFIG
 // -------------------------
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/fylshare";
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://fazalshaik24434_db_user:iPxI9z2vzHFw4zpC@cluster0.brelwu6.mongodb.net/fylshare?retryWrites=true&w=majority"; // Replace with your Mongo URI
 
 // Allowed origins
 const allowedOrigins = [
