@@ -12,8 +12,8 @@ const allowedOrigins = [
   "https://filehub-gyll.web.app",
   "https://fileverse-krwk3.web.app",
   "http://localhost:3000",
-   "http://localhost:3001",
-   "http://localhost:3002",
+  "http://localhost:3001",
+  "http://localhost:3002",
   "https://fylshare.com"
 ];
 
@@ -115,5 +115,5 @@ app.delete("/api/uploads/:code", async (req, res) => {
 
 // ===== START SERVER =====
 app.listen(PORT, () => {
-  console.log(🚀 Server running on port ${PORT});
+  console.log(`🚀 Server running on port ${PORT}`);
 });
