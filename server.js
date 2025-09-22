@@ -17,6 +17,7 @@ const allowedOrigins = [
   "https://fileverse-krwk3.web.app",
   "http://localhost:3000",
   "http://localhost:3002",
+   "http://localhost:3003",
   "https://fylshare.com",
 ];
 
