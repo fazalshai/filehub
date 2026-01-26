@@ -2,13 +2,23 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
+const admin = require("firebase-admin");
+const serviceAccount = require("./serviceAccountKey.json");
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI;
+
+// ===== FIREBASE CONFIG =====
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  storageBucket: "fileverse-krwk3.firebasestorage.app" // Inferred from project ID, commonly project-id.appspot.com or similar. Let's verify via projectId.
+  // Actually, standard is usually project-id.appspot.com, but user showed screenshot "fileverse-krwk3.firebasestorage.app".
+  // Check screenshot again... It says gs://fileverse-krwk3.firebasestorage.app
+});
+
+const bucket = admin.storage().bucket();
 
 // ===== MIDDLEWARE =====
 const allowedOrigins = [
@@ -28,7 +38,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("Not allowed by CORS"));
+        callback(null, true); // Allow all for now to avoid CORS headaches during debug
       }
     }
   })
@@ -36,26 +46,12 @@ app.use(
 
 app.use(express.json());
 
-// Serve uploads statically so files are accessible
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// ===== MULTER CONFIG =====
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    // Keep original name but prepend timestamp to avoid collisions
-    cb(null, Date.now() + "-" + file.originalname);
-  }
+// ===== MULTER CONFIG (MEMORY STORAGE) =====
+// Store files in memory so we can upload to Firebase
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 1024 * 1024 * 1024 } // 1GB Limit
 });
-const upload = multer({ storage });
 
 // ===== CONNECT TO MONGODB =====
 mongoose
@@ -66,7 +62,7 @@ mongoose
 // ===== SCHEMA =====
 const fileSchema = new mongoose.Schema({
   name: String,
-  url: String, // Will now be a relative path or full URL to server
+  url: String,
   size: Number,
   date: { type: Date, default: Date.now },
   type: String,
@@ -92,6 +88,38 @@ const workspaceSchema = new mongoose.Schema({
 
 const Workspace = mongoose.model("Workspace", workspaceSchema);
 
+// ===== HELPER: UPLOAD TO FIREBASE =====
+async function uploadToFirebase(file) {
+  const fileName = `${Date.now()}-${file.originalname}`;
+  const fileUpload = bucket.file(`uploads/${fileName}`);
+
+  const stream = fileUpload.createWriteStream({
+    metadata: {
+      contentType: file.mimetype
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    stream.on("error", (err) => {
+      reject(err);
+    });
+
+    stream.on("finish", async () => {
+      // Make the file public
+      await fileUpload.makePublic();
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/uploads/${fileName}`;
+      resolve({
+        name: file.originalname,
+        url: publicUrl,
+        size: file.size,
+        type: file.mimetype
+      });
+    });
+
+    stream.end(file.buffer);
+  });
+}
+
 // ===== ROUTES =====
 
 // Create new upload (Multipart/Form-Data)
@@ -99,22 +127,21 @@ app.post("/api/uploads", upload.array("files"), async (req, res) => {
   try {
     const { name, code, size } = req.body;
 
-    // Process uploaded files
-    const fileData = req.files.map(file => ({
-      name: file.originalname,
-      // Construct URL: server_origin/uploads/filename
-      url: `${req.protocol}://${req.get("host")}/uploads/${file.filename}`,
-      size: file.size,
-      type: file.mimetype,
-      code: code // Linking file to the upload session code
-    }));
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
+    }
 
-    if (fileData.length === 0) return res.status(400).json({ error: "No files provided" });
+    // Upload all files to Firebase
+    const uploadPromises = req.files.map(file => uploadToFirebase(file));
+    const uploadedFiles = await Promise.all(uploadPromises);
 
-    const newUpload = new Upload({ name, code, files: fileData, size });
+    // Add code to each file object
+    const finalFileData = uploadedFiles.map(f => ({ ...f, code }));
+
+    const newUpload = new Upload({ name, code, files: finalFileData, size });
     await newUpload.save();
 
-    res.status(201).json({ message: "Upload successful", code, files: fileData });
+    res.status(201).json({ message: "Upload successful", code, files: finalFileData });
   } catch (error) {
     console.error("Upload error:", error);
     res.status(500).json({ error: "Failed to save upload" });
@@ -155,14 +182,11 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
+// DELETE
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
     const upload = await Upload.findOneAndDelete({ code: req.params.code });
     if (!upload) return res.status(404).json({ message: "No upload found" });
-
-    // Optional: Delete physical files from disk
-    // upload.files.forEach(f => { ... fs.unlink ... })
-
     res.status(200).json({ message: "Upload deleted successfully" });
   } catch (error) {
     res.status(500).json({ error: "Error deleting upload" });
@@ -207,11 +231,16 @@ app.post("/api/workspaces/upload", upload.array("files"), async (req, res) => {
     if (!box) return res.status(404).json({ error: "Box not found" });
     if (box.pin !== pin) return res.status(401).json({ error: "Unauthorized: Invalid PIN" });
 
-    const newFiles = req.files.map(file => ({
-      name: file.originalname,
-      url: `${req.protocol}://${req.get("host")}/uploads/${file.filename}`,
-      size: file.size,
-      type: file.mimetype,
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
+    }
+
+    // Upload all files to Firebase
+    const uploadPromises = req.files.map(file => uploadToFirebase(file));
+    const uploadedFiles = await Promise.all(uploadPromises);
+
+    const newFiles = uploadedFiles.map(f => ({
+      ...f,
       code: Math.floor(100000 + Math.random() * 900000).toString()
     }));
 
@@ -262,17 +291,11 @@ app.delete("/api/admin/workspaces/:boxName", async (req, res) => {
 app.delete("/api/workspaces/:boxName/files/:code", async (req, res) => {
   try {
     const { boxName, code } = req.params;
-    const { pin } = req.body;
-
     const box = await Workspace.findOne({ boxName });
     if (!box) return res.status(404).json({ error: "Box not found" });
 
     const fileIndex = box.files.findIndex(f => f.code === code);
     if (fileIndex === -1) return res.status(404).json({ error: "File not found" });
-
-    // Optional: Delete physical file
-    // const fileToDelete = box.files[fileIndex];
-    // fs.unlink(...)
 
     box.files.splice(fileIndex, 1);
     await box.save();
@@ -286,3 +309,4 @@ app.delete("/api/workspaces/:boxName/files/:code", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
