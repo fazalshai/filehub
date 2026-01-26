@@ -2,20 +2,21 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
-const admin = require("firebase-admin");
-const serviceAccount = require("./serviceAccountKey.json");
-require("dotenv").config();
-
-const app = express();
-const PORT = process.env.PORT || 5001;
-const MONGO_URI = process.env.MONGO_URI;
-
 // ===== FIREBASE CONFIG =====
+let serviceAccount;
+try {
+  if (process.env.FIREBASE_CREDENTIALS) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+  } else {
+    serviceAccount = require("./serviceAccountKey.json");
+  }
+} catch (error) {
+  console.error("Failed to load Firebase credentials:", error);
+}
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  storageBucket: "fileverse-krwk3.firebasestorage.app" // Inferred from project ID, commonly project-id.appspot.com or similar. Let's verify via projectId.
-  // Actually, standard is usually project-id.appspot.com, but user showed screenshot "fileverse-krwk3.firebasestorage.app".
-  // Check screenshot again... It says gs://fileverse-krwk3.firebasestorage.app
+  storageBucket: "fileverse-krwk3.firebasestorage.app"
 });
 
 const bucket = admin.storage().bucket();
