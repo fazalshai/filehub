@@ -4,6 +4,11 @@ const cors = require("cors");
 const multer = require("multer");
 const admin = require("firebase-admin");
 require("dotenv").config();
+
+const app = express();
+const PORT = process.env.PORT || 5001;
+const MONGO_URI = process.env.MONGO_URI;
+
 // ===== FIREBASE CONFIG =====
 let serviceAccount;
 try {
