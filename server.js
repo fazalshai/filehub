@@ -2,6 +2,8 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
+const admin = require("firebase-admin");
+require("dotenv").config();
 // ===== FIREBASE CONFIG =====
 let serviceAccount;
 try {
