@@ -190,12 +190,31 @@ app.get("/api/uploads", async (req, res) => {
   }
 });
 
-// DELETE
+// ===== HELPER: DELETE FILES FROM FIREBASE STORAGE =====
+async function deleteFromFirebase(files) {
+  if (!Array.isArray(files) || files.length === 0) return;
+  await Promise.allSettled(
+    files.map(async (f) => {
+      if (!f || !f.url) return;
+      const marker = `${bucket.name}/`;
+      const idx = f.url.indexOf(marker);
+      if (idx !== -1) {
+        const storagePath = decodeURIComponent(f.url.slice(idx + marker.length));
+        await bucket.file(storagePath).delete({ ignoreNotFound: true });
+      }
+    })
+  );
+}
+
+// DELETE (Deletes both MongoDB document AND Firebase Storage objects to stop storage cost bleed)
 app.delete("/api/uploads/:code", async (req, res) => {
   try {
     const upload = await Upload.findOneAndDelete({ code: req.params.code });
     if (!upload) return res.status(404).json({ message: "No upload found" });
-    res.status(200).json({ message: "Upload deleted successfully" });
+
+    await deleteFromFirebase(upload.files);
+
+    res.status(200).json({ message: "Upload and cloud storage files deleted successfully" });
   } catch (error) {
     res.status(500).json({ error: "Error deleting upload" });
   }
@@ -290,7 +309,8 @@ app.delete("/api/admin/workspaces/:boxName", async (req, res) => {
   try {
     const deleted = await Workspace.findOneAndDelete({ boxName: req.params.boxName });
     if (!deleted) return res.status(404).json({ error: "Box not found" });
-    res.json({ message: "Box deleted" });
+    await deleteFromFirebase(deleted.files);
+    res.json({ message: "Box and cloud files deleted" });
   } catch (error) {
     res.status(500).json({ error: "Delete error" });
   }
@@ -299,14 +319,17 @@ app.delete("/api/admin/workspaces/:boxName", async (req, res) => {
 app.delete("/api/workspaces/:boxName/files/:code", async (req, res) => {
   try {
     const { boxName, code } = req.params;
+    const { pin } = req.body || {};
     const box = await Workspace.findOne({ boxName });
     if (!box) return res.status(404).json({ error: "Box not found" });
+    if (pin && box.pin !== pin) return res.status(401).json({ error: "Invalid PIN" });
 
     const fileIndex = box.files.findIndex(f => f.code === code);
     if (fileIndex === -1) return res.status(404).json({ error: "File not found" });
 
-    box.files.splice(fileIndex, 1);
+    const [removedFile] = box.files.splice(fileIndex, 1);
     await box.save();
+    await deleteFromFirebase([removedFile]);
 
     res.json({ message: "File deleted", files: box.files });
   } catch (error) {
