@@ -82,10 +82,29 @@ const uploadSchema = new mongoose.Schema({
   files: [fileSchema],
   code: String,
   size: Number,
+  reports: { type: Number, default: 0 },
+  reportReasons: [String],
   date: { type: Date, default: Date.now },
 });
 
 const Upload = mongoose.model("Upload", uploadSchema);
+
+// ===== SECURITY: BLOCKED EXECUTABLE EXTENSIONS & RATE LIMITING =====
+const BLOCKED_EXTENSIONS = /\.(exe|bat|cmd|scr|vbs|pif|com|msi)$/i;
+const codeLookupRateMap = new Map();
+
+function checkRateLimit(ip, maxRequests = 25, windowMs = 60 * 1000) {
+  const now = Date.now();
+  const entry = codeLookupRateMap.get(ip) || { count: 0, resetAt: now + windowMs };
+  if (now > entry.resetAt) {
+    entry.count = 1;
+    entry.resetAt = now + windowMs;
+  } else {
+    entry.count += 1;
+  }
+  codeLookupRateMap.set(ip, entry);
+  return entry.count <= maxRequests;
+}
 
 const workspaceSchema = new mongoose.Schema({
   boxName: { type: String, unique: true, required: true },
@@ -139,6 +158,12 @@ app.post("/api/uploads", upload.array("files"), async (req, res) => {
       return res.status(400).json({ error: "No files provided" });
     }
 
+    // Block raw executable malware files at the server level
+    const dangerousFile = req.files.find(f => BLOCKED_EXTENSIONS.test(f.originalname || ""));
+    if (dangerousFile) {
+      return res.status(400).json({ error: `Executable file type not permitted: ${dangerousFile.originalname}` });
+    }
+
     // Upload all files to Firebase
     const uploadPromises = req.files.map(file => uploadToFirebase(file));
     const uploadedFiles = await Promise.all(uploadPromises);
@@ -156,9 +181,14 @@ app.post("/api/uploads", upload.array("files"), async (req, res) => {
   }
 });
 
-// Get a single upload by code
+// Get a single upload by code (with brute-force rate limiting)
 app.get("/api/uploads/:code", async (req, res) => {
   try {
+    const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    if (!checkRateLimit(clientIp)) {
+      return res.status(429).json({ message: "Too many code lookup attempts. Please wait a minute." });
+    }
+
     const code = req.params.code;
     const uploadData = await Upload.findOne({ code });
     if (uploadData) {
@@ -220,6 +250,48 @@ app.delete("/api/uploads/:code", async (req, res) => {
   }
 });
 
+// Report Abuse / Prohibited Content (Auto-quarantines & deletes if reported >= 3 times)
+app.post("/api/report", async (req, res) => {
+  try {
+    const { code, reason } = req.body || {};
+    if (!code) return res.status(400).json({ error: "Code is required" });
+
+    const upload = await Upload.findOne({ code });
+    if (!upload) return res.status(404).json({ message: "Transfer not found" });
+
+    upload.reports = (upload.reports || 0) + 1;
+    if (reason) upload.reportReasons.push(String(reason).slice(0, 300));
+
+    if (upload.reports >= 3) {
+      await deleteFromFirebase(upload.files);
+      await Upload.deleteOne({ _id: upload._id });
+      return res.json({ message: "Transfer automatically removed due to multiple abuse reports." });
+    }
+
+    await upload.save();
+    res.json({ message: "Abuse report recorded for review." });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to submit report" });
+  }
+});
+
+// Automatic Ephemeral Expiry Cleanup (Purges anonymous uploads older than 48 hours every hour)
+setInterval(async () => {
+  try {
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const expiredUploads = await Upload.find({ date: { $lt: cutoff } });
+    for (const exp of expiredUploads) {
+      await deleteFromFirebase(exp.files);
+      await Upload.deleteOne({ _id: exp._id });
+    }
+    if (expiredUploads.length > 0) {
+      console.log(`🧹 Auto-expired ${expiredUploads.length} transfers older than 48h`);
+    }
+  } catch (err) {
+    console.error("Expiry cleanup error:", err);
+  }
+}, 60 * 60 * 1000);
+
 // ===== WORKSPACE ROUTES =====
 
 app.post("/api/box/create", async (req, res) => {
@@ -260,6 +332,12 @@ app.post("/api/workspaces/upload", upload.array("files"), async (req, res) => {
 
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "No files provided" });
+    }
+
+    // Block raw executable malware files at the server level
+    const dangerousFile = req.files.find(f => BLOCKED_EXTENSIONS.test(f.originalname || ""));
+    if (dangerousFile) {
+      return res.status(400).json({ error: `Executable file type not permitted: ${dangerousFile.originalname}` });
     }
 
     // Upload all files to Firebase
