@@ -82,6 +82,7 @@ const uploadSchema = new mongoose.Schema({
   files: [fileSchema],
   code: String,
   size: Number,
+  location: { type: String, default: "" },
   reports: { type: Number, default: 0 },
   reportReasons: [String],
   date: { type: Date, default: Date.now },
@@ -152,7 +153,7 @@ async function uploadToFirebase(file) {
 // Create new upload (Multipart/Form-Data)
 app.post("/api/uploads", upload.array("files"), async (req, res) => {
   try {
-    const { name, code, size } = req.body;
+    const { name, code, size, location } = req.body;
 
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "No files provided" });
@@ -171,7 +172,7 @@ app.post("/api/uploads", upload.array("files"), async (req, res) => {
     // Add code to each file object
     const finalFileData = uploadedFiles.map(f => ({ ...f, code }));
 
-    const newUpload = new Upload({ name, code, files: finalFileData, size });
+    const newUpload = new Upload({ name, code, files: finalFileData, size, location: location || "" });
     await newUpload.save();
 
     res.status(201).json({ message: "Upload successful", code, files: finalFileData });
