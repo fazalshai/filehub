@@ -315,10 +315,9 @@ test("5. Cleanup retries, failure observability, and historical record preservat
 
   const afterSuccess = await Upload.findOne({ transferId: "tr_cleanup_test" });
   assert.ok(afterSuccess, "Historical operational record must NOT be deleted from MongoDB");
-  assert.equal(afterSuccess.status, "expired");
-  assert.equal(afterSuccess.code, null);
-  assert.equal(afterSuccess.name, "[Redacted after expiry]");
-  assert.equal(afterSuccess.files[0].name, "[Expired file]");
+  assert.equal(afterSuccess.status, "deleted");
+  assert.equal(afterSuccess.name, "Sensitive Label");
+  assert.equal(afterSuccess.files[0].name, "private_contract.pdf");
   assert.equal(afterSuccess.files[0].storageDeleted, true);
   assert.ok(afterSuccess.storageDeletedAt);
 

@@ -35,9 +35,10 @@ const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI;
 
 // Retention & Lifecycle Configuration
-const FILE_TTL_HOURS = Number(process.env.FILE_TTL_HOURS || 48); // Default 48 hours for anonymous files
+// Files remain available permanently unless revoked by the uploader or deleted/moderated by an admin.
+const FILE_TTL_HOURS = process.env.FILE_TTL_HOURS ? Number(process.env.FILE_TTL_HOURS) : null;
 const OPERATIONAL_HISTORY_RETENTION_DAYS = Number(
-  process.env.OPERATIONAL_HISTORY_RETENTION_DAYS || 90
+  process.env.OPERATIONAL_HISTORY_RETENTION_DAYS || 3650
 );
 const STRUCTURED_TRACKING_STARTED_AT = "2026-11-16T00:00:00.000Z";
 
@@ -395,16 +396,13 @@ let lastCleanupRunSummary = {
 
 async function runStorageCleanupCycle() {
   const now = new Date();
-  const legacyCutoff = new Date(now.getTime() - FILE_TTL_HOURS * 3600 * 1000);
 
-  // Find transfers that have passed expiresAt (or legacy transfers without expiresAt older than FILE_TTL_HOURS)
-  // and whose storage objects have not yet been deleted.
+  // Only retry transfers explicitly marked as "deletion_pending" (or with an explicit expiresAt set in the past).
+  // Standard transfers without an expiration date remain stored permanently.
   const candidates = await Upload.find({
-    status: { $in: ["available", "deletion_pending", null] },
     $or: [
-      { expiresAt: { $lte: now } },
-      { expiresAt: { $exists: false }, date: { $lte: legacyCutoff } },
-      { expiresAt: null, date: { $lte: legacyCutoff } },
+      { status: "deletion_pending" },
+      { status: "available", expiresAt: { $ne: null, $lte: now } },
     ],
   }).limit(100);
 
@@ -418,25 +416,14 @@ async function runStorageCleanupCycle() {
     const delResult = await deleteFromFirebase(transfer.files);
     if (delResult.ok) {
       const deletedFilesCount = Array.isArray(transfer.files) ? transfer.files.length : 0;
-      transfer.status = "expired";
+      transfer.status = transfer.status === "deletion_pending" ? "deleted" : "expired";
       transfer.storageDeletedAt = now;
-      transfer.metadataMinimizedAt = now;
       transfer.lastCleanupError = null;
-
-      // Minimize identifying metadata while preserving operational history record!
-      if (!transfer.codeHash && transfer.code) {
-        transfer.codeHash = hashToken(transfer.code);
-      }
-      transfer.code = null;
-      transfer.shareTokenHash = null;
-      transfer.revokeTokenHash = null;
-      transfer.name = "[Redacted after expiry]";
-      transfer.labelRedacted = true;
 
       if (Array.isArray(transfer.files)) {
         transfer.files = transfer.files.map((f, idx) => ({
           fileId: f.fileId || `file_${idx + 1}`,
-          name: "[Expired file]",
+          name: f.name,
           storagePath: "",
           url: "",
           isPublicLegacy: false,
@@ -444,7 +431,7 @@ async function runStorageCleanupCycle() {
           date: f.date,
           type: f.type || "application/octet-stream",
           extension: f.extension || "",
-          code: "",
+          code: f.code || "",
           scanStatus: f.scanStatus || "passed",
           forceAttachment: Boolean(f.forceAttachment),
           storageDeleted: true,
@@ -465,15 +452,6 @@ async function runStorageCleanupCycle() {
     }
   }
 
-  // Purge minimized operational history older than OPERATIONAL_HISTORY_RETENTION_DAYS
-  const historyCutoff = new Date(
-    now.getTime() - OPERATIONAL_HISTORY_RETENTION_DAYS * 24 * 3600 * 1000
-  );
-  await Upload.deleteMany({
-    status: { $in: ["expired", "deleted", "revoked", "rejected"] },
-    date: { $lt: historyCutoff },
-  });
-
   lastCleanupRunSummary = {
     lastRunAt: now.toISOString(),
     expiredProcessed,
@@ -484,15 +462,13 @@ async function runStorageCleanupCycle() {
 }
 
 // ===== NORMALIZE TRANSFER RECORD FOR ADMIN & API =====
-function normalizeTransferForAdmin(doc, includeFileNames = false) {
+function normalizeTransferForAdmin(doc, includeFileNames = true) {
   const now = new Date();
   const rawDate = doc.date ? new Date(doc.date) : now;
-  const computedExpiresAt = doc.expiresAt
-    ? new Date(doc.expiresAt)
-    : new Date(rawDate.getTime() + FILE_TTL_HOURS * 3600 * 1000);
+  const computedExpiresAt = doc.expiresAt ? new Date(doc.expiresAt) : null;
 
   let effectiveStatus = doc.status || "available";
-  if (effectiveStatus === "available" && computedExpiresAt <= now) {
+  if (effectiveStatus === "available" && computedExpiresAt && computedExpiresAt <= now) {
     effectiveStatus = "expired";
   }
 
@@ -524,16 +500,17 @@ function normalizeTransferForAdmin(doc, includeFileNames = false) {
   return {
     id: String(doc._id),
     transferId: doc.transferId || String(doc._id),
+    code: doc.code || null,
     transferType: doc.transferType || "anonymous",
     workspaceName: doc.workspaceName || null,
-    label: doc.labelRedacted ? "[Redacted after expiry]" : doc.name || "Untitled transfer",
+    label: doc.labelRedacted ? "[Redacted]" : doc.name || "Anonymous",
     labelRedacted: Boolean(doc.labelRedacted),
     fileCount,
     totalBytes,
     status: effectiveStatus,
     scanStatus: doc.scanStatus || "passed",
     createdAt: rawDate.toISOString(),
-    expiresAt: computedExpiresAt.toISOString(),
+    expiresAt: computedExpiresAt ? computedExpiresAt.toISOString() : null,
     storageDeletedAt: doc.storageDeletedAt ? new Date(doc.storageDeletedAt).toISOString() : null,
     cleanupAttempts: doc.cleanupAttempts || 0,
     lastCleanupError: doc.lastCleanupError || null,
@@ -725,7 +702,10 @@ app.post("/api/uploads", (req, res) => {
         const shareToken = generateHighEntropyToken(24);
         const revokeToken = generateHighEntropyToken(24);
         const now = new Date();
-        const expiresAt = new Date(now.getTime() + FILE_TTL_HOURS * 3600 * 1000);
+        // Persistent storage by default (null expiresAt unless FILE_TTL_HOURS env var is explicitly set)
+        const expiresAt = FILE_TTL_HOURS
+          ? new Date(now.getTime() + FILE_TTL_HOURS * 3600 * 1000)
+          : null;
 
         // Upload files privately to storage
         const uploadedFiles = await Promise.all(
@@ -784,7 +764,7 @@ app.post("/api/uploads", (req, res) => {
           shareToken,
           revokeToken,
           createdAt: now.toISOString(),
-          expiresAt: expiresAt.toISOString(),
+          expiresAt: expiresAt ? expiresAt.toISOString() : null,
           status: "available",
           scanStatus: overallScanStatus,
           fileCount: finalFileData.length,
@@ -834,18 +814,16 @@ app.get("/api/uploads/:identifier", async (req, res) => {
     }
 
     if (uploadData) {
-      const computedExpiresAt = uploadData.expiresAt
-        ? new Date(uploadData.expiresAt)
-        : new Date(new Date(uploadData.date).getTime() + FILE_TTL_HOURS * 3600 * 1000);
+      const computedExpiresAt = uploadData.expiresAt ? new Date(uploadData.expiresAt) : null;
 
-      // Enforce expiration and lifecycle status at request time (even if cleanup job hasn't run yet)
+      // Enforce lifecycle status and optional expiration at request time
       if (
         uploadData.status !== "available" ||
-        computedExpiresAt <= now ||
+        (computedExpiresAt && computedExpiresAt <= now) ||
         uploadData.storageDeletedAt
       ) {
         return res.status(404).json({
-          message: "This transfer has expired or is no longer available.",
+          message: "This transfer is no longer available.",
         });
       }
 
@@ -861,7 +839,7 @@ app.get("/api/uploads/:identifier", async (req, res) => {
         status: "available",
         scanStatus: uploadData.scanStatus || "passed",
         createdAt: new Date(uploadData.date).toISOString(),
-        expiresAt: computedExpiresAt.toISOString(),
+        expiresAt: computedExpiresAt ? computedExpiresAt.toISOString() : null,
         fileCount: uploadData.files?.length || 0,
         files: (uploadData.files || []).map((f, index) => ({
           index,
@@ -911,16 +889,14 @@ app.get("/api/uploads/:identifier/files/:fileIndex/download", async (req, res) =
       return res.status(404).json({ message: "Transfer not found or expired." });
     }
 
-    const computedExpiresAt = uploadData.expiresAt
-      ? new Date(uploadData.expiresAt)
-      : new Date(new Date(uploadData.date).getTime() + FILE_TTL_HOURS * 3600 * 1000);
+    const computedExpiresAt = uploadData.expiresAt ? new Date(uploadData.expiresAt) : null;
 
     if (
       uploadData.status !== "available" ||
-      computedExpiresAt <= now ||
+      (computedExpiresAt && computedExpiresAt <= now) ||
       uploadData.storageDeletedAt
     ) {
-      return res.status(410).json({ message: "This transfer has expired or been removed." });
+      return res.status(410).json({ message: "This transfer has been removed." });
     }
 
     const files = Array.isArray(uploadData.files) ? uploadData.files : [];
@@ -953,7 +929,7 @@ app.get("/api/uploads/:identifier/files/:fileIndex/download", async (req, res) =
         downloadUrl: signedUrl,
         fileName: sanitizeFilename(targetFile.name),
         forceAttachment,
-        expiresAt: computedExpiresAt.toISOString(),
+        expiresAt: computedExpiresAt ? computedExpiresAt.toISOString() : null,
       });
     }
 
@@ -1559,7 +1535,7 @@ app.post("/api/admin/logout", requireAdminAuth(["admin", "viewer"]), async (req,
 // Comprehensive Paginated Admin Transfers & Historical Activity Endpoint
 app.get("/api/admin/transfers", requireAdminAuth(["admin", "viewer"]), async (req, res) => {
   try {
-    const period = String(req.query.period || "7d"); // "today" | "7d" | "30d" | "custom" | "all_retained"
+    const period = String(req.query.period || "all_retained"); // Default to all retained history so older uploads never hide!
     const timezone = String(req.query.timezone || "Asia/Dubai");
     const view = String(req.query.view || "all"); // "all" | "active" | "historical"
     const statusFilter = String(req.query.status || "all");
