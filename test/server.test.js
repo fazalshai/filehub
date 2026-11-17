@@ -60,25 +60,13 @@ test("1. Unauthenticated and unauthorized admin access are rejected", async () =
   const r3 = await fetch(`${baseUrl}/api/admin/workspaces`);
   assert.equal(r3.status, 401);
 
-  // Viewer role can read metadata, but cannot delete or export or inspect file content
-  const viewerLogin = await loginAs("test_viewer", "TestViewerStrongPassword!88");
-  assert.equal(viewerLogin.status, 200);
-  const viewerToken = viewerLogin.data.token;
+  // Team credentials should NOT be accepted (only admin account is active)
+  const viewerLogin = await loginAs("team", "team");
+  assert.equal(viewerLogin.status, 401);
 
-  const rView = await fetch(`${baseUrl}/api/admin/transfers`, {
-    headers: { Authorization: `Bearer ${viewerToken}` },
-  });
-  assert.equal(rView.status, 200);
-
-  const rExportDenied = await fetch(`${baseUrl}/api/admin/export`, {
-    headers: { Authorization: `Bearer ${viewerToken}` },
-  });
-  assert.equal(rExportDenied.status, 403);
-
-  const rAuditDenied = await fetch(`${baseUrl}/api/admin/audit`, {
-    headers: { Authorization: `Bearer ${viewerToken}` },
-  });
-  assert.equal(rAuditDenied.status, 403);
+  // Admin account succeeds
+  const adminLogin = await loginAs("test_admin", "TestAdminStrongPassword!99");
+  assert.equal(adminLogin.status, 200);
 });
 
 test("2. File-type spoofing, executable signatures, and unsafe filenames are blocked", async () => {
@@ -375,9 +363,9 @@ test("7. Workspace isolation: omitting PIN or using wrong workspace token is den
   const boxData = await createBox.json();
   assert.ok(boxData.workspaceToken);
 
-  // Verify PIN is hashed in DB (plaintext pin is null)
+  // Verify PIN is retained for Admin Console view while also hashed
   const dbBox = await Workspace.findOne({ boxName: "TeamAlpha" });
-  assert.equal(dbBox.pin, null);
+  assert.equal(dbBox.pin, "4921");
   assert.ok(dbBox.pinHash);
 
   // Calling GET /api/workspaces/TeamAlpha WITHOUT token or PIN must return 401 (fixing the old bypass bug!)

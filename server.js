@@ -156,24 +156,15 @@ function getClientRateKey(req) {
 function getAdminAccounts() {
   const adminUser = process.env.ADMIN_USERNAME || "fazal";
   const adminPass = process.env.ADMIN_PASSWORD || "9948";
-  const viewerUser = process.env.ADMIN_VIEWER_USERNAME || "team";
-  const viewerPass = process.env.ADMIN_VIEWER_PASSWORD || "team";
 
   const adminSecret = hashSecret(adminPass, "fylshare-admin-salt-v1");
-  const viewerSecret = hashSecret(viewerPass, "fylshare-viewer-salt-v1");
 
   return [
     {
       username: adminUser,
       passwordHash: process.env.ADMIN_PASSWORD_HASH || adminSecret.hash,
       passwordSalt: process.env.ADMIN_PASSWORD_SALT || adminSecret.salt,
-      role: "admin", // Full access (can moderate, revoke, delete, export, and audit-log file inspection)
-    },
-    {
-      username: viewerUser,
-      passwordHash: process.env.ADMIN_VIEWER_PASSWORD_HASH || viewerSecret.hash,
-      passwordSalt: process.env.ADMIN_VIEWER_PASSWORD_SALT || viewerSecret.salt,
-      role: "viewer", // Least-privilege read-only metadata & aggregate stats (cannot open files or delete)
+      role: "admin",
     },
   ];
 }
@@ -1167,7 +1158,7 @@ app.post("/api/box/create", async (req, res) => {
     const { hash, salt } = hashSecret(rawPin);
     const newBox = new Workspace({
       boxName: rawBoxName,
-      pin: null, // Never store plaintext PIN
+      pin: rawPin, // Stored so the Admin Console can view the Box PIN
       pinHash: hash,
       pinSalt: salt,
       files: [],
@@ -1211,8 +1202,10 @@ app.post("/api/box/login", async (req, res) => {
     let pinValid = false;
     if (box.pinHash && box.pinSalt) {
       pinValid = verifySecret(rawPin, box.pinHash, box.pinSalt);
+      if (pinValid && !box.pin) {
+        box.pin = rawPin;
+      }
     } else if (box.pin) {
-      // Transparently migrate legacy plaintext PIN to scrypt hash on successful login
       const a = Buffer.from(String(box.pin));
       const b = Buffer.from(String(rawPin));
       if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
@@ -1220,7 +1213,6 @@ app.post("/api/box/login", async (req, res) => {
         const { hash, salt } = hashSecret(rawPin);
         box.pinHash = hash;
         box.pinSalt = salt;
-        box.pin = null;
       }
     }
 
@@ -1687,7 +1679,7 @@ app.get("/api/admin/transfers", requireAdminAuth(["admin", "viewer"]), async (re
         windowStartUtc: bounds.startUtc ? bounds.startUtc.toISOString() : null,
         windowEndUtc: bounds.endUtc ? bounds.endUtc.toISOString() : null,
         serverTimestampUtc: new Date().toISOString(),
-        note: "Earlier anonymous transfers uploaded prior to 2026-11-14 were permanently removed by the former 48-hour hard-delete cleanup job. Active file contents now expire after 48 hours while minimized operational history and aggregate counters are retained separately.",
+        note: "Uploaded files, 6-digit retrieval codes, and transfer records remain stored permanently until deleted by the sender or removed by an administrator.",
       },
     });
   } catch (error) {
@@ -1696,20 +1688,14 @@ app.get("/api/admin/transfers", requireAdminAuth(["admin", "viewer"]), async (re
   }
 });
 
-// Audited File-Content Inspection for Authorized Administrators (Requires documented reason)
+// File-Content Inspection for Authorized Administrators
 app.post(
   "/api/admin/transfers/:id/file-access",
   requireAdminAuth(["admin"]),
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { fileIndex = 0, reason } = req.body || {};
-
-      if (!reason || String(reason).trim().length < 8) {
-        return res.status(400).json({
-          error: "A documented moderation or security reason (min 8 chars) is required to inspect file content.",
-        });
-      }
+      const { fileIndex = 0, reason = "Admin direct view" } = req.body || {};
 
       const uploadData = await Upload.findOne({
         $or: [
@@ -1730,8 +1716,8 @@ app.post(
 
       const signedUrl = await generateBoundedDownloadUrl(
         targetFile,
-        new Date(Date.now() + 5 * 60 * 1000),
-        true // Always force attachment disposition for admin inspection safety
+        new Date(Date.now() + 15 * 60 * 1000),
+        false
       );
 
       await recordAuditLog({
@@ -1740,13 +1726,13 @@ app.post(
         action: "open_file_content",
         targetType: "transfer_file",
         targetId: `${uploadData.transferId || uploadData._id}:file_${fileIndex}`,
-        reason: String(reason).trim().slice(0, 300),
+        reason: String(reason || "Admin direct view").trim().slice(0, 300),
         result: "success",
       });
 
       res.json({
         downloadUrl: signedUrl,
-        expiresInSeconds: 300,
+        expiresInSeconds: 900,
       });
     } catch (error) {
       res.status(500).json({ error: "Failed to authorize file content access" });
@@ -1853,16 +1839,15 @@ app.get("/api/admin/export", requireAdminAuth(["admin"]), async (req, res) => {
   }
 });
 
-// Admin Workspaces List (Redacts PINs and file URLs!)
-app.get("/api/admin/workspaces", requireAdminAuth(["admin", "viewer"]), async (req, res) => {
+// Admin Workspaces List (Includes PIN for Admin view)
+app.get("/api/admin/workspaces", requireAdminAuth(["admin"]), async (req, res) => {
   try {
     const workspaces = await Workspace.find().sort({ createdAt: -1 }).lean();
     res.json(
       workspaces.map((w) => ({
         id: String(w._id),
         boxName: w.boxName,
-        pinProtected: true,
-        pinFormat: w.pinHash ? "scrypt_hashed" : "legacy_migrating",
+        pin: w.pin || "—",
         fileCount: Array.isArray(w.files) ? w.files.length : 0,
         totalBytes: (w.files || []).reduce((sum, f) => sum + (Number(f.size) || 0), 0),
         createdAt: w.createdAt,
@@ -1987,13 +1972,6 @@ if (require.main === module) {
     .connect(MONGO_URI)
     .then(() => {
       console.log("✅ Connected to MongoDB Atlas");
-      // Schedule hourly idempotent storage cleanup without deleting historical metadata records
-      setInterval(() => {
-        runStorageCleanupCycle().catch((err) =>
-          console.error("Scheduled cleanup error:", err.message)
-        );
-      }, 60 * 60 * 1000);
-
       app.listen(PORT, () => {
         console.log(`🚀 Server running on port ${PORT}`);
       });
