@@ -99,8 +99,10 @@ const uploadSchema = new mongoose.Schema({
   lastCleanupAttemptAt: { type: Date, default: null },
   lastCleanupError: { type: String, default: null },
 
-  // Accurate, Distinct Country & Device Reporting (Never mixes timezone or device into country)
-  location: { type: String, default: "" }, // Legacy field preserved for backward compatibility
+  // Accurate Country, State/Region & City Reporting for Quality & Security Monitoring
+  location: { type: String, default: "" },
+  city: { type: String, default: "" },
+  region: { type: String, default: "" },
   countryCode: { type: String, default: null, index: true },
   countryName: { type: String, default: "Unknown" },
   locationSource: {
@@ -109,6 +111,7 @@ const uploadSchema = new mongoose.Schema({
       "cloudflare_header",
       "vercel_header",
       "proxy_header",
+      "client_geo_consent",
       "legacy_record",
       "unknown",
     ],

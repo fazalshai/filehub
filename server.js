@@ -463,7 +463,9 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
     effectiveStatus = "expired";
   }
 
-  // Derive accurate country fields (handling both structured fields and legacy location strings)
+  // Derive accurate City, State/Region, and Country fields (handling both structured fields and legacy location strings)
+  let city = doc.city || "";
+  let region = doc.region || "";
   let countryCode = doc.countryCode || null;
   let countryName = doc.countryName || "Unknown";
   let locationSource = doc.locationSource || "unknown";
@@ -471,15 +473,27 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
   let browserTimezone = doc.browserTimezone || null;
   let deviceCategory = doc.deviceCategory || "unknown";
 
-  if ((!countryName || countryName === "Unknown") && doc.location) {
+  if ((!countryName || countryName === "Unknown" || (!city && !region)) && doc.location) {
     const parsed = parseLegacyLocation(doc.location);
-    countryCode = parsed.countryCode;
-    countryName = parsed.countryName;
-    locationSource = parsed.locationSource;
-    locationStatus = parsed.locationStatus;
+    if (!countryCode && parsed.countryCode) countryCode = parsed.countryCode;
+    if ((!countryName || countryName === "Unknown") && parsed.countryName !== "Unknown") {
+      countryName = parsed.countryName;
+    }
+    if (!city && parsed.city) city = parsed.city;
+    if (!region && parsed.region) region = parsed.region;
+    if (locationSource === "unknown" && parsed.locationSource !== "unknown") {
+      locationSource = parsed.locationSource;
+    }
+    if (locationStatus === "unknown" && parsed.locationStatus !== "unknown") {
+      locationStatus = parsed.locationStatus;
+    }
     browserTimezone = browserTimezone || parsed.browserTimezone;
-    deviceCategory = deviceCategory !== "unknown" ? deviceCategory : parsed.deviceCategory || "unknown";
+    deviceCategory =
+      deviceCategory !== "unknown" ? deviceCategory : parsed.deviceCategory || "unknown";
   }
+
+  const displayParts = [city, region, countryCode ? countryName : ""].filter(Boolean);
+  const locationDisplay = displayParts.length > 0 ? displayParts.join(", ") : "Unknown";
 
   const files = Array.isArray(doc.files) ? doc.files : [];
   const fileCount = typeof doc.fileCount === "number" && doc.fileCount > 0 ? doc.fileCount : files.length;
@@ -505,8 +519,11 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
     storageDeletedAt: doc.storageDeletedAt ? new Date(doc.storageDeletedAt).toISOString() : null,
     cleanupAttempts: doc.cleanupAttempts || 0,
     lastCleanupError: doc.lastCleanupError || null,
+    city,
+    region,
     countryCode,
     countryName: countryCode ? countryName : "Unknown",
+    locationDisplay,
     locationSource,
     locationStatus: countryCode ? "available" : "unknown",
     deviceCategory,
@@ -707,8 +724,14 @@ app.post("/api/uploads", (req, res) => {
 
         const finalFileData = uploadedFiles.map((f) => ({ ...f, code }));
 
-        // Derive approximate country strictly from trusted server/proxy headers
-        const locInfo = resolveRequestLocation(req);
+        // Derive City, State/Region, and Country from server headers + consented client location metadata
+        const clientGeo = {
+          city: typeof req.body?.city === "string" ? req.body.city : "",
+          region: typeof req.body?.region === "string" ? req.body.region : "",
+          countryCode: typeof req.body?.countryCode === "string" ? req.body.countryCode : "",
+          countryName: typeof req.body?.countryName === "string" ? req.body.countryName : "",
+        };
+        const locInfo = resolveRequestLocation(req, clientGeo);
         const rawLabel = typeof req.body?.name === "string" ? req.body.name.trim().slice(0, 80) : "";
 
         const overallScanStatus = inspections.some(
@@ -732,12 +755,14 @@ app.post("/api/uploads", (req, res) => {
           scanStatus: overallScanStatus,
           date: now,
           expiresAt,
+          city: locInfo.city,
+          region: locInfo.region,
           countryCode: locInfo.countryCode,
           countryName: locInfo.countryName,
           locationSource: locInfo.locationSource,
           locationStatus: locInfo.locationStatus,
           deviceCategory: locInfo.deviceCategory,
-          location: locInfo.countryCode ? locInfo.countryName : "Unknown",
+          location: locInfo.locationDisplay,
         });
 
         await newUpload.save();
