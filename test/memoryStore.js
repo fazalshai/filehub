@@ -5,6 +5,11 @@ const {
   AbuseReport,
   AdminAuditLog,
   DailyStats,
+  RewardCampaign,
+  RewardParticipant,
+  RewardEvent,
+  GiftCardInventory,
+  GiftCardReward,
 } = require("../models");
 
 function matchesCondition(val, cond) {
@@ -14,6 +19,16 @@ function matchesCondition(val, cond) {
         if (item === null && (val === null || val === undefined)) return true;
         return item === val;
       });
+    }
+    if ("$ne" in cond) {
+      if (cond.$ne === null) {
+        if (val === null || val === undefined) return false;
+      } else if (val === cond.$ne) {
+        return false;
+      }
+      // Continue checking other operators like $lte if present alongside $ne
+      const restKeys = Object.keys(cond).filter((k) => k !== "$ne");
+      if (restKeys.length === 0) return true;
     }
     if ("$exists" in cond) {
       return cond.$exists ? val !== undefined : val === undefined;
@@ -31,6 +46,9 @@ function matchesCondition(val, cond) {
   if (cond instanceof Date || val instanceof Date) {
     return new Date(val).getTime() === new Date(cond).getTime();
   }
+  if (Array.isArray(val)) {
+    return val.some((v) => String(v ?? "") === String(cond ?? ""));
+  }
   return String(val ?? "") === String(cond ?? "");
 }
 
@@ -47,6 +65,27 @@ function matchesQuery(doc, query = {}) {
     if (!matchesCondition(val, cond)) return false;
   }
   return true;
+}
+
+function setNestedPath(obj, pathStr, value) {
+  if (!pathStr.includes(".")) {
+    obj[pathStr] = value;
+    return;
+  }
+  const parts = pathStr.split(".");
+  let curr = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!curr[parts[i]] || typeof curr[parts[i]] !== "object") {
+      curr[parts[i]] = {};
+    }
+    curr = curr[parts[i]];
+  }
+  curr[parts[parts.length - 1]] = value;
+}
+
+function getNestedPath(obj, pathStr) {
+  if (!pathStr.includes(".")) return obj[pathStr];
+  return pathStr.split(".").reduce((o, k) => (o ? o[k] : undefined), obj);
 }
 
 function createQueryChain(items, isSingle = false) {
@@ -95,6 +134,11 @@ function attachInMemoryStore() {
     AbuseReport: [],
     AdminAuditLog: [],
     DailyStats: [],
+    RewardCampaign: [],
+    RewardParticipant: [],
+    RewardEvent: [],
+    GiftCardInventory: [],
+    GiftCardReward: [],
   };
 
   function bindModel(Model, storeKey) {
@@ -114,6 +158,23 @@ function attachInMemoryStore() {
     };
 
     Model.create = async function (data) {
+      // Enforce unique eventId or idempotencyKey in memory store
+      if (storeKey === "RewardEvent" && data.eventId) {
+        const dup = list.find((item) => item.eventId === data.eventId);
+        if (dup) {
+          const err = new Error("E11000 duplicate key error eventId");
+          err.code = 11000;
+          throw err;
+        }
+      }
+      if (storeKey === "GiftCardReward" && data.idempotencyKey) {
+        const dup = list.find((item) => item.idempotencyKey === data.idempotencyKey);
+        if (dup) {
+          const err = new Error("E11000 duplicate key error idempotencyKey");
+          err.code = 11000;
+          throw err;
+        }
+      }
       const doc = new Model(data);
       await doc.save();
       return doc;
@@ -170,12 +231,13 @@ function attachInMemoryStore() {
       if (!doc) return null;
       if (update.$inc) {
         for (const [k, v] of Object.entries(update.$inc)) {
-          doc[k] = (Number(doc[k]) || 0) + Number(v);
+          const current = Number(getNestedPath(doc, k)) || 0;
+          setNestedPath(doc, k, current + Number(v));
         }
       }
       if (update.$set) {
         for (const [k, v] of Object.entries(update.$set)) {
-          doc[k] = v;
+          setNestedPath(doc, k, v);
         }
       }
       await doc.save();
@@ -188,6 +250,11 @@ function attachInMemoryStore() {
   bindModel(AbuseReport, "AbuseReport");
   bindModel(AdminAuditLog, "AdminAuditLog");
   bindModel(DailyStats, "DailyStats");
+  bindModel(RewardCampaign, "RewardCampaign");
+  bindModel(RewardParticipant, "RewardParticipant");
+  bindModel(RewardEvent, "RewardEvent");
+  bindModel(GiftCardInventory, "GiftCardInventory");
+  bindModel(GiftCardReward, "GiftCardReward");
 
   return {
     stores,
@@ -200,4 +267,3 @@ function attachInMemoryStore() {
 }
 
 module.exports = { attachInMemoryStore };
-
