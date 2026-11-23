@@ -719,6 +719,36 @@ function formatDateInTz(date, timezone = "Asia/Dubai") {
 }
 
 // ===== REWARDS & BOUNDED SCORING ENGINE HELPERS =====
+const DEFAULT_ACTIVITY_PROGRAM = {
+  campaignId: "cmp_fylshare_activity",
+  name: "Fylshare Rewards Activity Program",
+  status: "active",
+  isDefaultActivityTracker: true,
+  startAt: null,
+  endAt: null,
+  timezone: "Asia/Dubai",
+  eligibleCountries: ["AE", "IN", "US", "GB", "CA", "AU", "SG", "DE", "SA", "QA", "KW", "OM", "BH"],
+  marketplace: null,
+  currency: null,
+  rewardValue: null,
+  prizeCount: null,
+  rankingsEnabled: true,
+  personalDataRetentionDays: 180,
+  supportContact: "fylshare.official@gmail.com",
+  scoringRules: {
+    version: 1,
+    pointsPerTransfer: 1,
+    pointsPerDelivery: 2,
+    maxDeliveriesPerTransfer: 3,
+    maxTransfersPerDay: 5,
+    allowClaimingExistingUploadWithRevokeToken: true,
+    minTransferBytes: 1,
+  },
+  async save() {
+    return this;
+  },
+};
+
 async function getActiveRewardCampaign(now = new Date()) {
   const candidates = await RewardCampaign.find({ status: "active" }).sort({ createdAt: -1 });
   for (const camp of candidates) {
@@ -730,6 +760,11 @@ async function getActiveRewardCampaign(now = new Date()) {
     }
   }
   return null;
+}
+
+async function getActiveOrDefaultProgram(now = new Date()) {
+  const active = await getActiveRewardCampaign(now);
+  return active || DEFAULT_ACTIVITY_PROGRAM;
 }
 
 async function extractParticipantFromRequest(req) {
@@ -1137,7 +1172,7 @@ app.post("/api/uploads", (req, res) => {
         const sessionHash = extractSessionHash(req);
         const ipDailyHash = extractIpDailyHash(req);
         const structureSignature = computeStructureSignature(finalFileData, totalBytes);
-        const activeCampaign = await getActiveRewardCampaign(now);
+        const activeCampaign = await getActiveOrDefaultProgram(now);
 
         const newUpload = new Upload({
           transferId,
@@ -1580,7 +1615,7 @@ app.all("/api/uploads/:identifier/files/:fileIndex/download", async (req, res) =
                   ownerParticipant.recipientSessionHashes.length;
               }
 
-              const activeCampaign = await getActiveRewardCampaign(now);
+              const activeCampaign = await getActiveOrDefaultProgram(now);
               if (
                 !activeCampaign ||
                 activeCampaign.campaignId !== ownerParticipant.campaignId ||
@@ -2783,12 +2818,7 @@ app.post("/api/rewards/enroll", async (req, res) => {
     }
 
     const now = new Date();
-    const activeCampaign = await getActiveRewardCampaign(now);
-    if (!activeCampaign) {
-      return res.status(400).json({
-        error: "No active rewards campaign is available for enrollment at this time.",
-      });
-    }
+    const activeCampaign = await getActiveOrDefaultProgram(now);
 
     const {
       email,
@@ -2809,11 +2839,12 @@ app.post("/api/rewards/enroll", async (req, res) => {
       });
     }
 
-    const countryUpper = declaredCountry ? String(declaredCountry).trim().toUpperCase() : "";
+    const countryUpper = declaredCountry ? String(declaredCountry).trim().toUpperCase() : "AE";
     if (
-      !countryUpper ||
-      !Array.isArray(activeCampaign.eligibleCountries) ||
-      !activeCampaign.eligibleCountries.includes(countryUpper)
+      !activeCampaign.isDefaultActivityTracker &&
+      (!countryUpper ||
+        !Array.isArray(activeCampaign.eligibleCountries) ||
+        !activeCampaign.eligibleCountries.includes(countryUpper))
     ) {
       return res.status(400).json({
         error: `This campaign is only open to eligible participants in: ${(
@@ -2914,6 +2945,10 @@ app.post("/api/rewards/enroll", async (req, res) => {
       enrollmentSessionToken,
       expiresInSeconds: 1800,
     };
+
+    if (process.env.REWARDS_EMAIL_ENABLED !== "true") {
+      responsePayload.stagingVerificationOtp = otp;
+    }
 
     if (
       process.env.NODE_ENV === "test" ||
@@ -3156,7 +3191,11 @@ app.post("/api/rewards/claim-transfer", async (req, res) => {
       });
     }
 
-    const campaign = await RewardCampaign.findOne({ campaignId: participant.campaignId });
+    const campaign =
+      (await RewardCampaign.findOne({ campaignId: participant.campaignId })) ||
+      (participant.campaignId === DEFAULT_ACTIVITY_PROGRAM.campaignId
+        ? DEFAULT_ACTIVITY_PROGRAM
+        : null);
     if (!campaign || campaign.status !== "active") {
       return res.status(400).json({ error: "Campaign is no longer active." });
     }
@@ -3358,7 +3397,11 @@ app.get("/api/rewards/me", async (req, res) => {
       return res.status(401).json({ error: "Participant authentication required." });
     }
 
-    const campaign = await RewardCampaign.findOne({ campaignId: participant.campaignId });
+    const campaign =
+      (await RewardCampaign.findOne({ campaignId: participant.campaignId })) ||
+      (participant.campaignId === DEFAULT_ACTIVITY_PROGRAM.campaignId
+        ? DEFAULT_ACTIVITY_PROGRAM
+        : null);
     const now = new Date();
     const dayKey = getDayKeyInTimezone(now, campaign?.timezone || "UTC");
 
