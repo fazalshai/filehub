@@ -1174,6 +1174,102 @@ app.post("/api/uploads", (req, res) => {
         const structureSignature = computeStructureSignature(finalFileData, totalBytes);
         const activeCampaign = await getActiveOrDefaultProgram(now);
 
+        let effectiveParticipant = participant;
+        let rewardEnrollment = null;
+        const inlineRewardEmail =
+          typeof req.body?.rewardEmail === "string" ? normalizeEmail(req.body.rewardEmail) : "";
+
+        if (inlineRewardEmail && isValidEmail(inlineRewardEmail)) {
+          let emailParticipant = await RewardParticipant.findOne({
+            campaignId: activeCampaign.campaignId,
+            email: inlineRewardEmail,
+          });
+          const otp = generateOtpCode();
+          const verificationToken = generateHighEntropyToken(24);
+          const verifyExpiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+          const declaredCountry =
+            (typeof req.body?.rewardCountry === "string" &&
+              req.body.rewardCountry.trim().toUpperCase()) ||
+            locInfo.countryCode ||
+            "AE";
+
+          if (!emailParticipant) {
+            emailParticipant = new RewardParticipant({
+              participantId: `part_${generateHighEntropyToken(10)}`,
+              campaignId: activeCampaign.campaignId,
+              email: inlineRewardEmail,
+              emailVerified: false,
+              verificationTokenHash: hashToken(verificationToken),
+              verificationOtpHash: hashToken(otp),
+              verificationExpiresAt: verifyExpiresAt,
+              verificationResendCount: 1,
+              lastVerificationSentAt: now,
+              serviceMessagesAccepted: true,
+              marketingOptIn: req.body?.rewardMarketingOptIn === "true",
+              declaredCountry,
+              approxIpCountry: locInfo.countryCode || null,
+              sessionHashes: sessionHash ? [sessionHash] : [],
+              createdAt: now,
+            });
+            await emailParticipant.save();
+          } else if (!emailParticipant.emailVerified) {
+            emailParticipant.verificationTokenHash = hashToken(verificationToken);
+            emailParticipant.verificationOtpHash = hashToken(otp);
+            emailParticipant.verificationExpiresAt = verifyExpiresAt;
+            emailParticipant.lastVerificationSentAt = now;
+            await emailParticipant.save();
+          }
+
+          effectiveParticipant = emailParticipant;
+
+          if (!emailParticipant.emailVerified) {
+            await sendRewardsServiceEmail({
+              to: inlineRewardEmail,
+              subject: `Verify your email for ${activeCampaign.name}`,
+              category: "service_verification",
+              template: "verify_enrollment",
+              metadata: {
+                campaignId: activeCampaign.campaignId,
+                expiresInMinutes: 30,
+                verificationCode: otp,
+                verificationToken,
+              },
+            });
+            const enrollmentSessionToken = createSignedToken(
+              {
+                scope: "rewards_enrollment_pending",
+                participantId: emailParticipant.participantId,
+                campaignId: activeCampaign.campaignId,
+              },
+              30 * 60
+            );
+            rewardEnrollment = {
+              email: inlineRewardEmail,
+              emailVerified: false,
+              participantId: emailParticipant.participantId,
+              enrollmentSessionToken,
+              ...(process.env.REWARDS_EMAIL_ENABLED !== "true"
+                ? { stagingVerificationOtp: otp }
+                : {}),
+            };
+          } else {
+            const pToken = createSignedToken(
+              {
+                scope: "participant_session",
+                participantId: emailParticipant.participantId,
+                campaignId: activeCampaign.campaignId,
+              },
+              7 * 24 * 3600
+            );
+            rewardEnrollment = {
+              email: inlineRewardEmail,
+              emailVerified: true,
+              participantId: emailParticipant.participantId,
+              participantToken: pToken,
+            };
+          }
+        }
+
         const newUpload = new Upload({
           transferId,
           eventId: rawEventId,
@@ -1198,21 +1294,23 @@ app.post("/api/uploads", (req, res) => {
           locationStatus: locInfo.locationStatus,
           deviceCategory: locInfo.deviceCategory,
           location: locInfo.locationDisplay,
-          participantId: participant ? participant.participantId : null,
+          participantId: effectiveParticipant ? effectiveParticipant.participantId : null,
           campaignId:
-            participant && activeCampaign && participant.campaignId === activeCampaign.campaignId
+            effectiveParticipant &&
+            activeCampaign &&
+            effectiveParticipant.campaignId === activeCampaign.campaignId
               ? activeCampaign.campaignId
-              : participant
-              ? participant.campaignId
+              : effectiveParticipant
+              ? effectiveParticipant.campaignId
               : null,
           uploaderSessionHash: sessionHash,
           uploaderIpHash: ipDailyHash,
           structureSignature,
         });
 
-        if (participant) {
+        if (effectiveParticipant) {
           await scoreUploadForParticipant({
-            participant,
+            participant: effectiveParticipant,
             campaign: activeCampaign,
             uploadDoc: newUpload,
             eventId: rawEventId,
@@ -1244,6 +1342,7 @@ app.post("/api/uploads", (req, res) => {
           participantId: newUpload.participantId,
           qualifiesForUploadPoints: newUpload.qualifiesForUploadPoints,
           uploadPointsAwarded: newUpload.uploadPointsAwarded,
+          rewardEnrollment,
           files: finalFileData.map((f, idx) => ({
             index: idx,
             fileId: f.fileId,
