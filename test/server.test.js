@@ -37,10 +37,12 @@ test.after(async () => {
   }
 });
 
+let loginIpCounter = 1;
 async function loginAs(username, password) {
+  const ip = `10.0.0.${loginIpCounter++}`;
   const res = await fetch(`${baseUrl}/api/admin/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.1" },
+    headers: { "Content-Type": "application/json", "X-Forwarded-For": ip },
     body: JSON.stringify({ username, password }),
   });
   const data = await res.json();
@@ -349,6 +351,28 @@ test("6. Uploader revocation deletes server files, distinct from local device hi
     headers: { "X-Forwarded-For": "10.0.2.1" },
   });
   assert.equal(afterRevokeLookup.status, 404);
+
+  // Admin can still inspect full compliance audit metadata (original code, label, filenames, IP, and audit log)
+  const adminLogin = await loginAs("test_admin", "TestAdminStrongPassword!99");
+  const adminTransfers = await (
+    await fetch(`${baseUrl}/api/admin/transfers?period=all_retained`, {
+      headers: { Authorization: `Bearer ${adminLogin.data.token}` },
+    })
+  ).json();
+  const revokedRecord = adminTransfers.items.find((t) => t.transferId === created.transferId);
+  assert.ok(revokedRecord);
+  assert.equal(revokedRecord.status, "revoked");
+  assert.equal(revokedRecord.code, null);
+  assert.equal(revokedRecord.revokedCode, created.code);
+  assert.equal(revokedRecord.label, "Temp Doc");
+  assert.equal(revokedRecord.files[0].name, "temp.pdf");
+  assert.equal(revokedRecord.files[0].storageDeleted, true);
+  assert.ok(revokedRecord.revokedAt);
+  assert.ok(revokedRecord.uploaderIp);
+
+  const revokeLogs = await AdminAuditLog.find({ action: "sender_revoke_transfer" });
+  assert.equal(revokeLogs.length, 1);
+  assert.equal(revokeLogs[0].metadata.revokedCode, created.code);
 });
 
 test("7. Workspace isolation: omitting PIN or using wrong workspace token is denied", async () => {

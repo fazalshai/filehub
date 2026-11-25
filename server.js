@@ -561,6 +561,7 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
     id: String(doc._id),
     transferId: doc.transferId || String(doc._id),
     code: doc.code || null,
+    revokedCode: doc.revokedCode || null,
     transferType: doc.transferType || "anonymous",
     workspaceName: doc.workspaceName || null,
     label: doc.labelRedacted ? "[Redacted]" : doc.name || "Anonymous",
@@ -572,6 +573,12 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
     createdAt: rawDate.toISOString(),
     expiresAt: computedExpiresAt ? computedExpiresAt.toISOString() : null,
     storageDeletedAt: doc.storageDeletedAt ? new Date(doc.storageDeletedAt).toISOString() : null,
+    revokedAt: doc.revokedAt ? new Date(doc.revokedAt).toISOString() : null,
+    uploaderIp: doc.uploaderIp || null,
+    revokerIp: doc.revokerIp || null,
+    termsAccepted: doc.termsAccepted !== false,
+    termsAcceptedAt: doc.termsAcceptedAt ? new Date(doc.termsAcceptedAt).toISOString() : null,
+    termsVersion: doc.termsVersion || null,
     cleanupAttempts: doc.cleanupAttempts || 0,
     lastCleanupError: doc.lastCleanupError || null,
     city,
@@ -600,7 +607,7 @@ function normalizeTransferForAdmin(doc, includeFileNames = true) {
     files: files.map((f, idx) => ({
       index: idx,
       fileId: f.fileId || `file_${idx + 1}`,
-      name: includeFileNames && !f.storageDeleted ? f.name : f.storageDeleted ? "[Deleted from storage]" : f.name,
+      name: includeFileNames ? f.name : f.storageDeleted ? "[Deleted from storage]" : f.name,
       size: f.size || 0,
       type: f.type || "application/octet-stream",
       extension: f.extension || "",
@@ -1305,6 +1312,11 @@ app.post("/api/uploads", (req, res) => {
               : null,
           uploaderSessionHash: sessionHash,
           uploaderIpHash: ipDailyHash,
+          uploaderIp: getClientRateKey(req),
+          uploaderUserAgent: String((req.headers && req.headers["user-agent"]) || "").slice(0, 200),
+          termsAccepted: req.body?.termsAccepted !== "false",
+          termsAcceptedAt: now,
+          termsVersion: "2026-11-25",
           structureSignature,
         });
 
@@ -1853,17 +1865,18 @@ app.post("/api/uploads/:code/revoke", async (req, res) => {
 
     uploadData.status = delResult.ok ? "revoked" : "deletion_pending";
     uploadData.storageDeletedAt = delResult.ok ? now : null;
-    uploadData.metadataMinimizedAt = now;
+    uploadData.revokedAt = now;
+    uploadData.revokerIp = getClientRateKey(req);
     uploadData.lastCleanupError = delResult.ok ? null : delResult.errors.join("; ");
+    uploadData.revokedCode = uploadData.code || uploadData.revokedCode || null;
     uploadData.code = null;
     uploadData.shareTokenHash = null;
     uploadData.revokeTokenHash = null;
-    uploadData.name = "[Revoked by uploader]";
-    uploadData.labelRedacted = true;
+    // Retain original label and filenames in Admin metadata while purging the stored file blobs from cloud storage
     if (Array.isArray(uploadData.files)) {
       uploadData.files = uploadData.files.map((f, idx) =>
         preserveFileOperationalMetrics(f, idx, {
-          name: "[Deleted by uploader]",
+          name: f.name,
           code: "",
           storageDeleted: delResult.ok,
         })
@@ -1874,6 +1887,21 @@ app.post("/api/uploads/:code/revoke", async (req, res) => {
     await incrementDailyStats(now, {
       transfersRevoked: 1,
       filesDeleted: delResult.ok ? deletedCount : 0,
+    });
+    await recordAuditLog({
+      actor: "sender",
+      role: "uploader",
+      action: "sender_revoke_transfer",
+      targetType: "transfer",
+      targetId: uploadData.transferId || String(uploadData._id),
+      reason: "Sender deleted/revoked transfer using revokeToken",
+      result: delResult.ok ? "success" : "error",
+      metadata: {
+        revokedCode: uploadData.revokedCode,
+        location: uploadData.location || "Unknown",
+        uploaderIp: uploadData.uploaderIp || null,
+        revokerIp: uploadData.revokerIp || null,
+      },
     });
 
     res.json({

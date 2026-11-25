@@ -65,8 +65,9 @@ const uploadSchema = new mongoose.Schema({
   name: { type: String, default: "" },
   labelRedacted: { type: Boolean, default: false },
 
-  // Short 6-digit retrieval code (cleared once expired/revoked/deleted) + SHA-256 hash for audit lookup
+  // Short 6-digit retrieval code (cleared once expired/revoked/deleted) + SHA-256 hash & revokedCode for admin/legal audit
   code: { type: String, index: true },
+  revokedCode: { type: String, index: true, default: null },
   codeHash: { type: String, index: true },
 
   // High-entropy tokens (stored as SHA-256 hashes only; raw token returned once to client)
@@ -171,6 +172,15 @@ const uploadSchema = new mongoose.Schema({
   recipientDeliveryPointsAwarded: { type: Number, default: 0 },
   rewardSessionHashes: { type: [String], default: [] },
   suspiciousFlags: { type: [String], default: [] },
+
+  // Legal Accountability & Compliance Audit Metadata (Admin-only, retained across revocation)
+  uploaderIp: { type: String, default: null },
+  revokerIp: { type: String, default: null },
+  uploaderUserAgent: { type: String, default: null },
+  termsAccepted: { type: Boolean, default: true },
+  termsAcceptedAt: { type: Date, default: null },
+  termsVersion: { type: String, default: null },
+  revokedAt: { type: Date, default: null },
 
   // Moderation & Abuse Reports
   reports: { type: Number, default: 0 },
